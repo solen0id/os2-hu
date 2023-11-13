@@ -1,3 +1,29 @@
+// This is a simple implementation of a single producer single consumer channel
+// using a fixed size ring buffer. The access to the buffer is synchronized using
+// atomic operations, no mutexes are used. The buffer is implemented using an array
+// of UnsafeCells with an Atomic Reference Counter, which allows us to both read and
+//  write to the buffer from separate threads.
+//
+// The channel is implemented using 2 structs, Producer and Consumer, which both
+// have a reference to the same buffer. The Producer writes to the buffer and the
+// Consumer consumes elements from the buffer, replacing them with None values.
+//
+// The Producer will raise as SendError if the Consumer is not active anymore, e.g.
+// if the Consumer was dropped. The Consumer will raise a RecvError if the Producer
+// is not active anymore and all buffered elements have been read.
+//
+// We use 2 atomic indiced to keep track of the read and write index on the buffer.
+// We make sure to synchronize the access to the buffer in the following way:
+// - The Producer can write to the buffer, as long as its write index is ahead of the
+//   read index of the Consumer.
+// - Since we have a ring buffer, the Producer must ensure that it does not
+//  overtake the Consumer when wrapping around the buffer, so the maximum write index
+//  is the read index + the buffer size.
+// - The Consumer can read from the buffer, as long as its read index is behind the
+//   write index of the Producer.
+// - The Consumer will continue to read from the buffer, even if the Producer is not
+//   active anymore, as long as there are still elements in the buffer.
+
 #![allow(unused_variables)]
 
 use std::cell::UnsafeCell;
