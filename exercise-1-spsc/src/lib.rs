@@ -6,8 +6,8 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-// Check if we can tweak the buffer size for performance
-const BUFFER_SIZE: usize = 4096;
+// checked and confirmed tests also ran with a small buffer size, e.g 32
+const BUFFER_SIZE: usize = 1024;
 
 pub struct Producer<T: Send> {
     message_buffer: Arc<[UnsafeCell<Option<T>>; BUFFER_SIZE]>,
@@ -39,10 +39,12 @@ pub struct RecvError;
 
 impl<T: Send> SPSC<T> {
     const INIT: UnsafeCell<Option<T>> = UnsafeCell::new(None);
-    pub fn new() -> Self {
-        // The only way I found for 2 threads to share a buffer is unsafe cells
-        let cell_array: [UnsafeCell<Option<T>>; BUFFER_SIZE] = [Self::INIT; BUFFER_SIZE];
 
+    pub fn new() -> Self {
+        // The only way I found for 2 threads to share a buffer is unsafe cells,
+        // but I'm sure there is a better way and I  would love to know how to do it
+        // in a more idiomatic / safe way!
+        let cell_array: [UnsafeCell<Option<T>>; BUFFER_SIZE] = [Self::INIT; BUFFER_SIZE];
         let message_buffer: Arc<[UnsafeCell<Option<T>>; BUFFER_SIZE]> = Arc::new(cell_array);
 
         let read_index: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
@@ -74,35 +76,25 @@ impl<T: Send> SPSC<T> {
 
 impl<T: Send> Producer<T> {
     pub fn send(&self, val: T) -> Result<(), SendError<T>> {
-        if self.consumer_counter.load(Ordering::SeqCst) == 0 {
-            return Err(SendError(val));
-        }
-
         loop {
-            let write_index: usize = self.write_index.load(Ordering::SeqCst);
-            let read_index: usize = self.read_index.load(Ordering::SeqCst);
+            // If the consumer is not active anymore, we can not send any more messages
+            if self.consumer_counter.load(Ordering::SeqCst) == 0 {
+                return Err(SendError(val));
+            }
 
-            // The write index must not 'overtake' the read index
-            // when wrapping around the buffer
-            //
-            // Since we only have one producer, we do not need an atomic swap
-            // to synchronize the write_index increment
-            //
-            // If the read_index changes during the load, it is okay because
-            // the consumer will only read the message when the read index
-            // is smaller than the write index
-            //
-            // Initially, the read index and write index are 0,
-            // so we allow a write to the first element of the buffer
-            if write_index >= read_index && write_index < read_index + BUFFER_SIZE {
+            let write_index: usize = self.write_index.load(Ordering::SeqCst);
+
+            // the producer can write to all places in the buffer, as long as it is
+            // ahead of the consumer. However since we have a ring buffer, the producer
+            // must ensure that it does not overtake the consumer when wrapping around
+            // the buffer!
+            if write_index < self.read_index.load(Ordering::SeqCst) + BUFFER_SIZE {
                 unsafe {
                     self.message_buffer[write_index % BUFFER_SIZE]
                         .get()
                         .write(Some(val));
                 }
-
                 self.write_index.fetch_add(1, Ordering::SeqCst);
-
                 return Ok(());
             }
         }
@@ -112,26 +104,28 @@ impl<T: Send> Producer<T> {
 impl<T: Send> Consumer<T> {
     pub fn recv(&self) -> Result<T, RecvError> {
         loop {
-            let write_index: usize = self.write_index.load(Ordering::SeqCst);
             let read_index: usize = self.read_index.load(Ordering::SeqCst);
 
             // When no producer is active and the consumer read all messages, we are done
-            if read_index == write_index && self.producer_counter.load(Ordering::SeqCst) == 0 {
-                return Err(RecvError);
+            if self.producer_counter.load(Ordering::SeqCst) == 0 {
+                if read_index == self.write_index.load(Ordering::SeqCst) {
+                    return Err(RecvError);
+                }
             }
 
             // since there is only one consumer, we do not need an atomic swap
-            // to synchronize the read_index increment
+            // to synchronize the read_index
             //
             // If the write_index changes during the load, it is okay because
             // the write index will always be greater than the read index and the
             // producer ensures, that the write index never overtakes the read index
             // when wrapping around the buffer
-            if read_index < write_index {
+            if read_index < self.write_index.load(Ordering::SeqCst) {
                 unsafe {
                     let val = self.message_buffer[read_index % BUFFER_SIZE]
                         .get()
                         .replace(None);
+
                     self.read_index.fetch_add(1, Ordering::SeqCst);
                     return Ok(val.unwrap());
                 }
@@ -143,8 +137,20 @@ impl<T: Send> Consumer<T> {
 impl<T: Send> Iterator for Consumer<T> {
     type Item = T;
     fn next(&mut self) -> Option<Self::Item> {
-        // TODO: fill with life
-        unimplemented!()
+        match self.recv() {
+            Ok(val) => Some(val),
+            Err(_) => None,
+        }
+    }
+}
+
+impl<T: Send> Iterator for &Consumer<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.recv() {
+            Ok(val) => Some(val),
+            Err(_) => None,
+        }
     }
 }
 
