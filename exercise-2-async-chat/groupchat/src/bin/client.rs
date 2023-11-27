@@ -3,9 +3,11 @@ use std::{
     net, str, thread,
 };
 
+const BUFFER_SIZE: usize = 256;
+
 fn main() -> io::Result<()> {
     let mut reader = net::TcpStream::connect("127.0.0.1:8000")?;
-    let mut buf = [0u8; 256];
+    let mut buf = [0u8; BUFFER_SIZE];
 
     let mut writer = reader.try_clone()?;
 
@@ -22,7 +24,7 @@ fn main() -> io::Result<()> {
             Err(_) => break,
         };
 
-        println!("recv: \"{}\"", msg);
+        println!("{}", msg);
     });
 
     // Read messages from stdin and send them to the server forever, or until the
@@ -30,6 +32,10 @@ fn main() -> io::Result<()> {
     loop {
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
+
+        // clear the last line of input,
+        // so we don't print the user's input twice
+        print!("\x1b[1A\x1b[2K");
 
         writer.write(input.trim().as_bytes())?;
 

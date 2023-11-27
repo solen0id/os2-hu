@@ -16,7 +16,9 @@ struct Message {
     stream: Option<TcpStream>,
 }
 
-const CLIENT_CAPACITY: usize = 100;
+const CLIENT_CAPACITY: usize = 32;
+const BUFFER_SIZE: usize = 256;
+const NONE: Option<TcpStream> = None;
 
 fn main() -> io::Result<()> {
     let mut conn_count = 0; // incremented for each new connection
@@ -25,19 +27,17 @@ fn main() -> io::Result<()> {
 
     // spawn a thread to handle incoming messages and broadcast them to all clients
     //
-    // This thread keeps a list of clients in a vector. When a client connects, it adds
+    // This thread keeps a list of clients* in a vector. When a client connects, it adds
     // the client to the list. When a client disconnects, it removes the client from the
     // list. When a message is received, it broadcasts the message to all clients in the
     // list.
+    // * = We actually store client TCPStreams wrapped in an Option
     //
     // The thread is spawned with `move` so that it takes ownership of the `rx` channel.
     // The consumer part of the mpsc channel receives from each producer, i.e each
     // thread spawned by our TCPListener.
     thread::spawn(move || {
-        let mut clients: Vec<Option<TcpStream>> = Vec::with_capacity(CLIENT_CAPACITY);
-        for _ in 0..CLIENT_CAPACITY {
-            clients.push(None);
-        }
+        let mut clients: Vec<Option<TcpStream>> = Vec::from([NONE; CLIENT_CAPACITY]);
 
         for msg in &rx {
             // text can be None, so we need to unwrap_or a default value
@@ -56,13 +56,16 @@ fn main() -> io::Result<()> {
                     .shutdown(std::net::Shutdown::Both)
                     .unwrap();
                 clients[msg.id] = None;
-                text = format!("Client {} disconnected", msg.id);
+                text = "disconnected".to_string();
             }
 
             // Do not broadcast empty messages
             if text == "" {
                 continue;
             }
+
+            // prepend the client id to the message
+            text = format!("Client {}: {}", msg.id, text);
 
             // broadcast the message to all active clients
             for client in &clients {
@@ -83,7 +86,7 @@ fn main() -> io::Result<()> {
 
         thread::spawn(move || {
             let conn_id = conn_count.clone();
-            let mut buf = [0u8; 256];
+            let mut buf = [0u8; BUFFER_SIZE];
 
             println!("Server: connected {:?}", stream);
 
