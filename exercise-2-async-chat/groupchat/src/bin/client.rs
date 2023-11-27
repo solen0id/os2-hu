@@ -9,6 +9,7 @@ fn main() -> io::Result<()> {
 
     let mut writer = reader.try_clone()?;
 
+    // Spawn a thread to read incoming messages from the server and print to stdout
     let handle = thread::spawn(move || loop {
         let len = match reader.read(&mut buf) {
             Ok(0) => break,
@@ -17,7 +18,6 @@ fn main() -> io::Result<()> {
         };
 
         let msg = match str::from_utf8(&buf[0..len]) {
-            Ok("!exit") => break,
             Ok(msg) => msg,
             Err(_) => break,
         };
@@ -25,6 +25,8 @@ fn main() -> io::Result<()> {
         println!("recv: \"{}\"", msg);
     });
 
+    // Read messages from stdin and send them to the server forever, or until the
+    // user types "!exit".
     loop {
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
