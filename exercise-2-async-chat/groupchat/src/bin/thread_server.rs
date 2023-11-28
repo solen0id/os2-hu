@@ -4,7 +4,7 @@ use std::{
     io::{self, Read, Write},
     net::TcpListener,
     net::TcpStream,
-    thread,
+    str, thread,
 };
 
 #[derive(Debug)]
@@ -48,13 +48,12 @@ fn main() -> io::Result<()> {
             if msg.is_connect {
                 clients[msg.id] = msg.stream;
             } else if (msg.is_disconnect || text == "!exit") && clients[msg.id].is_some() {
-                clients
+                let _ = clients
                     .get(msg.id)
                     .unwrap()
                     .as_ref()
                     .expect("Client not found")
-                    .shutdown(std::net::Shutdown::Both)
-                    .unwrap();
+                    .shutdown(std::net::Shutdown::Both);
                 clients[msg.id] = None;
                 text = "disconnected".to_string();
             }
@@ -64,10 +63,14 @@ fn main() -> io::Result<()> {
                 continue;
             }
 
+            // add newline to the end of the message
+            // text.push('\n');
+
             // prepend the client id to the message
             text = format!("Client {}: {}", msg.id, text);
 
             // broadcast the message to all active clients
+            println!("");
             for client in &clients {
                 if client.is_none() {
                     continue;
@@ -81,12 +84,18 @@ fn main() -> io::Result<()> {
     println!("Server: listening on {:?}", listener);
     // This loop accepts incoming connections and spawns a new thread to handle each
     // connection.
+    // We read messages from the TCPStream and push them into a string buffer until we
+    // receive a newline. Then we forward the message to the channel consumer, so it can
+    // broadcast it to all clients.
+    // This lets us transmit messages of any length "in one piece", regardless of the
+    // size of the TCPStream's internal buffer on the server and client(s).
     while let Ok((mut stream, _)) = listener.accept() {
         let tx_clone = tx.clone();
 
         thread::spawn(move || {
             let conn_id = conn_count.clone();
             let mut buf = [0u8; BUFFER_SIZE];
+            let mut text = String::new();
 
             println!("Server: connected {:?}", stream);
 
@@ -105,11 +114,17 @@ fn main() -> io::Result<()> {
             // If the client disconnects, send a disconnect message to the channel
             // consumer.
             loop {
-                let len = match stream.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(len) => len,
-                    Err(_) => break,
-                };
+                while let Ok(len) = stream.read(&mut buf) {
+                    if len == 0 {
+                        break;
+                    }
+
+                    text.push_str(str::from_utf8(&buf[0..len]).unwrap());
+
+                    if text.ends_with("\n") {
+                        break;
+                    }
+                }
 
                 // Forward the message to the channel consumer, so it can broadcast it
                 // to all clients.
@@ -117,9 +132,11 @@ fn main() -> io::Result<()> {
                     id: conn_id,
                     is_connect: false,
                     is_disconnect: false,
-                    text: Some(String::from_utf8((&buf[0..len]).to_vec()).unwrap()),
+                    text: Some(text.clone()),
                     stream: None,
                 };
+
+                text.clear(); // clear the string buffer for the next message
 
                 if tx_clone.send(message).is_err() {
                     break;
