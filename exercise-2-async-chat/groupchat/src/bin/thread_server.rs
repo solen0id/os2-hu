@@ -70,7 +70,6 @@ fn main() -> io::Result<()> {
             text = format!("Client {}: {}", msg.id, text);
 
             // broadcast the message to all active clients
-            println!("");
             for client in &clients {
                 if client.is_none() {
                     continue;
