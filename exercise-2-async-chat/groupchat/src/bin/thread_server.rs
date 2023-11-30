@@ -47,7 +47,7 @@ fn main() -> io::Result<()> {
             // clients list.
             if msg.is_connect {
                 clients[msg.id] = msg.stream;
-            } else if (msg.is_disconnect || text == "!exit") && clients[msg.id].is_some() {
+            } else if (msg.is_disconnect || text == "!exit\n") && clients[msg.id].is_some() {
                 let _ = clients
                     .get(msg.id)
                     .unwrap()
@@ -63,19 +63,34 @@ fn main() -> io::Result<()> {
                 continue;
             }
 
-            // add newline to the end of the message
-            // text.push('\n');
-
             // prepend the client id to the message
             text = format!("Client {}: {}", msg.id, text);
 
             // broadcast the message to all active clients
+            // and keep track of failures
+            let mut failed = Vec::new();
+
             for client in &clients {
                 if client.is_none() {
                     continue;
                 }
+
                 let mut client = client.as_ref().unwrap();
-                client.write(&text.as_bytes()).unwrap();
+
+                match client.write(&text.as_bytes()) {
+                    Ok(_) => {}
+                    Err(_) => {
+                        // if we can't write to the client, it probably has disconnected
+                        // remove it from the list of clients.
+                        let _ = client.shutdown(std::net::Shutdown::Both);
+                        failed.push(msg.id);
+                    }
+                }
+            }
+
+            // remove failed clients from the list
+            for id in failed {
+                clients[id] = None;
             }
         }
     });
@@ -135,7 +150,8 @@ fn main() -> io::Result<()> {
                     stream: None,
                 };
 
-                text.clear(); // clear the string buffer for the next message
+                // clear the string buffer for the next message
+                text.clear();
 
                 if tx_clone.send(message).is_err() {
                     break;

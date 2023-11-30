@@ -48,15 +48,14 @@ fn main() -> io::Result<()> {
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
 
-        if input.trim() == "!exit" {
-            break;
-        }
-
         // clear the last line of input,
         // so we don't print the user's input twice
         print!("\x1b[1A\x1b[2K");
-
         writer.write(input.as_bytes())?;
+
+        if input.trim() == "!exit" {
+            break;
+        }
     }
 
     match handle.join() {
