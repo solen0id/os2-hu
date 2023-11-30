@@ -2,6 +2,7 @@ use std::sync::mpsc;
 
 use std::{
     io::{self, Read, Write},
+    net::Shutdown,
     net::TcpListener,
     net::TcpStream,
     str, thread,
@@ -9,16 +10,14 @@ use std::{
 
 #[derive(Debug)]
 struct Message {
-    id: usize,
+    client_id: usize,
     is_connect: bool,
     is_disconnect: bool,
     text: Option<String>,
     stream: Option<TcpStream>,
 }
 
-const CLIENT_CAPACITY: usize = 32;
 const BUFFER_SIZE: usize = 256;
-const NONE: Option<TcpStream> = None;
 
 fn main() -> io::Result<()> {
     let mut conn_count = 0; // incremented for each new connection
@@ -37,7 +36,7 @@ fn main() -> io::Result<()> {
     // The consumer part of the mpsc channel receives from each producer, i.e each
     // thread spawned by our TCPListener.
     thread::spawn(move || {
-        let mut clients: Vec<Option<TcpStream>> = Vec::from([NONE; CLIENT_CAPACITY]);
+        let mut clients: Vec<Option<TcpStream>> = Vec::new();
 
         for msg in &rx {
             // text can be None, so we need to unwrap_or a default value
@@ -46,16 +45,18 @@ fn main() -> io::Result<()> {
             // if the client is connecting or disconnecting, we need to update the
             // clients list.
             if msg.is_connect {
-                clients[msg.id] = msg.stream;
-            } else if (msg.is_disconnect || text == "!exit\n") && clients[msg.id].is_some() {
+                clients.push(msg.stream);
+                assert!(clients.len() == msg.client_id + 1);
+            } else if (msg.is_disconnect || text == "!exit\n") && clients[msg.client_id].is_some() {
                 let _ = clients
-                    .get(msg.id)
+                    .get(msg.client_id)
                     .unwrap()
                     .as_ref()
                     .expect("Client not found")
-                    .shutdown(std::net::Shutdown::Both);
-                clients[msg.id] = None;
-                text = "disconnected".to_string();
+                    .shutdown(Shutdown::Both);
+                clients[msg.client_id] = None;
+                text = "disconnected\n".to_string();
+                println!("Removed client {} due to disconnect", msg.client_id);
             }
 
             // Do not broadcast empty messages
@@ -63,14 +64,14 @@ fn main() -> io::Result<()> {
                 continue;
             }
 
-            // prepend the client id to the message
-            text = format!("Client {}: {}", msg.id, text);
+            // prepend the client client_id to the message
+            text = format!("Client {}: {}", msg.client_id, text);
 
             // broadcast the message to all active clients
-            // and keep track of failures
+            // and remove unreachable clients from the list
             let mut failed = Vec::new();
 
-            for client in &clients {
+            for (client_ix, client) in clients.iter().enumerate() {
                 if client.is_none() {
                     continue;
                 }
@@ -79,18 +80,19 @@ fn main() -> io::Result<()> {
 
                 match client.write(&text.as_bytes()) {
                     Ok(_) => {}
-                    Err(_) => {
+                    Err(e) => {
                         // if we can't write to the client, it probably has disconnected
                         // remove it from the list of clients.
-                        let _ = client.shutdown(std::net::Shutdown::Both);
-                        failed.push(msg.id);
+                        let _ = client.shutdown(Shutdown::Both);
+                        failed.push(client_ix);
+                        println!("Removed client {} due to write error {}", client_ix, e);
                     }
                 }
             }
 
-            // remove failed clients from the list
-            for id in failed {
-                clients[id] = None;
+            // remove failed clients
+            for client_id in failed {
+                clients[client_id] = None;
             }
         }
     });
@@ -107,7 +109,7 @@ fn main() -> io::Result<()> {
         let tx_clone = tx.clone();
 
         thread::spawn(move || {
-            let conn_id = conn_count.clone();
+            let conn_client_id = conn_count.clone();
             let mut buf = [0u8; BUFFER_SIZE];
             let mut text = String::new();
 
@@ -116,7 +118,7 @@ fn main() -> io::Result<()> {
             // Send a connect message to the channel consumer, so it can add the client
             // to the list of recipients for broadcast messages.
             let message = Message {
-                id: conn_id,
+                client_id: conn_client_id,
                 is_connect: true,
                 is_disconnect: false,
                 text: None,
@@ -143,7 +145,7 @@ fn main() -> io::Result<()> {
                 // Forward the message to the channel consumer, so it can broadcast it
                 // to all clients.
                 let message = Message {
-                    id: conn_id,
+                    client_id: conn_client_id,
                     is_connect: false,
                     is_disconnect: false,
                     text: Some(text.clone()),
@@ -162,7 +164,7 @@ fn main() -> io::Result<()> {
             // the channel consumer, so it can remove the client from the list of
             // recipients for broadcast messages.
             let message = Message {
-                id: conn_id,
+                client_id: conn_client_id,
                 is_connect: false,
                 is_disconnect: true,
                 text: None,
