@@ -47,7 +47,7 @@ fn main() -> io::Result<()> {
             if msg.is_connect {
                 clients.push(msg.stream);
                 assert!(clients.len() == msg.client_id + 1);
-            } else if (msg.is_disconnect || text == "!exit\n") && clients[msg.client_id].is_some() {
+            } else if msg.is_disconnect && clients[msg.client_id].is_some() {
                 let _ = clients
                     .get(msg.client_id)
                     .unwrap()
@@ -141,6 +141,9 @@ fn main() -> io::Result<()> {
                         break;
                     }
                 }
+				if text.trim() == "!exit" {
+					break;
+				}
 
                 // Forward the message to the channel consumer, so it can broadcast it
                 // to all clients.
