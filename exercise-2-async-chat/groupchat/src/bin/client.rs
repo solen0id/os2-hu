@@ -33,7 +33,7 @@ fn main() -> io::Result<()> {
             }
         }
 
-        if finished {
+        if finished || output.contains("!exit") {
             break;
         }
 
