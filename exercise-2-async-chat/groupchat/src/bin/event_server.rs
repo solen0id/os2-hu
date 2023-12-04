@@ -71,14 +71,23 @@ fn main() -> io::Result<()> {
 									if input.trim() == "!exit" {
 										break true;
 									}
-									input = format!("Client {}: {}", n-1, input);
-									for i in 0..clients.len() {
-										// skip disconnected clients
-										if !clients[i].is_none() {
-											let receiver = clients[i].as_mut().unwrap();
-											if receiver.write(input.as_bytes()).is_err() {
-												let _ = receiver.shutdown(Shutdown::Both);
-												continue;
+									// split the possible multiple messages into single messages
+									let single_messages: Vec<&str> = input.split('\n').collect();
+									for m in single_messages {
+										// skip empty messages
+										if m.len()==0{
+											continue;
+										}
+										// add sender information
+										let message = format!("Client {}: {}\n", n-1, m);
+										for i in 0..clients.len() {
+											// skip disconnected clients
+											if !clients[i].is_none() {
+												let receiver = clients[i].as_mut().unwrap();
+												if receiver.write(message.as_bytes()).is_err() {
+													let _ = receiver.shutdown(Shutdown::Both);
+													continue;
+												}
 											}
 										}
 									}
