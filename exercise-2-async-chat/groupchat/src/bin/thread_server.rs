@@ -59,41 +59,44 @@ fn main() -> io::Result<()> {
                 println!("Removed client {} due to disconnect", msg.client_id);
             }
 
-            // Do not broadcast empty messages
-            if text == "" {
-                continue;
-            }
-
-            // prepend the client client_id to the message
-            text = format!("Client {}: {}", msg.client_id, text);
-
-            // broadcast the message to all active clients
-            // and remove unreachable clients from the list
-            let mut failed = Vec::new();
-
-            for (client_ix, client) in clients.iter().enumerate() {
-                if client.is_none() {
-                    continue;
-                }
-
-                let mut client = client.as_ref().unwrap();
-
-                match client.write(&text.as_bytes()) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        // if we can't write to the client, it probably has disconnected
-                        // remove it from the list of clients.
-                        let _ = client.shutdown(Shutdown::Both);
-                        failed.push(client_ix);
-                        println!("Removed client {} due to write error {}", client_ix, e);
-                    }
-                }
-            }
-
-            // remove failed clients
-            for client_id in failed {
-                clients[client_id] = None;
-            }
+			let single_messages: Vec<&str> = text.split('\n').collect();
+			for m in single_messages {
+				// Do not broadcast empty messages
+				if m.len()==0{
+					continue;
+				}
+				// prepend the client client_id to the message
+				let message = format!("Client {}: {}\n", msg.client_id, m);
+		
+		
+				// broadcast the message to all active clients
+				// and remove unreachable clients from the list
+				let mut failed = Vec::new();
+		
+				for (client_ix, client) in clients.iter().enumerate() {
+					if client.is_none() {
+						continue;
+					}
+		
+					let mut client = client.as_ref().unwrap();
+		
+					match client.write(&message.as_bytes()) {
+						Ok(_) => {}
+						Err(e) => {
+							// if we can't write to the client, it probably has disconnected
+							// remove it from the list of clients.
+							let _ = client.shutdown(Shutdown::Both);
+							failed.push(client_ix);
+							println!("Removed client {} due to write error {}", client_ix, e);
+						}
+					}
+				}
+		
+				// remove failed clients
+				for client_id in failed {
+					clients[client_id] = None;
+				}
+			}
         }
     });
 
