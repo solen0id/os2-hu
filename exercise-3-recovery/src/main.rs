@@ -32,7 +32,7 @@ fn recover_files(_device: fs::File, _path: &str) -> io::Result<()> {
                     image.push(byte);
                 }
             } else {
-                // image not detected yet
+                // image start not detected yet
                 if byte == JPEG_STRT_B1 && image.is_empty() {
                     image.push(byte);
                 } else if byte == JPEG_STRT_B1 {
@@ -42,7 +42,7 @@ fn recover_files(_device: fs::File, _path: &str) -> io::Result<()> {
                     println!("found image start");
                     image.push(byte);
                     image_detected = true;
-                } else {
+                } else if !image.is_empty() {
                     image.clear();
                 }
             }

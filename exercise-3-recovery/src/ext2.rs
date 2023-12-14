@@ -114,9 +114,17 @@ impl Ext2FS {
 
         // parse data blocks
         let data_bytes_size: usize = bitmap_bytes.len() * 8 * blocksize;
+
+        // TODO: Investigate why setting data_bytes_offset=1024 produces a jpeg
+        // WITHOUT artefacts for small.img, but not any of the other file systems..?
+        //
+        // let data_bytes_offset = superblock.s_first_data_block * superblock.s_block_size;
+        let data_bytes_offset: u32 = 0;
+
         let mut data_bytes: Vec<u8> = vec![0u8; data_bytes_size];
+
         let _bytes_read = file
-            .read_at(&mut data_bytes, 0)
+            .read_at(&mut data_bytes, data_bytes_offset.into())
             .expect("Could not read data block bytes");
         let nested_data_bytes: Vec<Vec<u8>> = data_bytes
             .chunks(blocksize)
