@@ -22,7 +22,7 @@ fn recover_files(_device: fs::File, _path: &str) -> io::Result<()> {
 
     for block in e2fs.block_iter {
         // skip non-data blocks
-        if block_nr == 13 || block_nr == 270 || block_nr == 65806{
+        if block_nr == 13 || block_nr == 270 || block_nr == 65807 {
             block_nr += 1;
             continue;
         }
