@@ -18,8 +18,14 @@ fn recover_files(_device: fs::File, _path: &str) -> io::Result<()> {
     let mut images: Vec<Vec<u8>> = Vec::new();
     let mut image: Vec<u8> = Vec::new();
     let mut image_detected: bool = false;
+    let mut block_nr = 0;
 
     for block in e2fs.block_iter {
+        // skip non-data blocks
+        if block_nr == 13 || block_nr == 270 || block_nr == 65806{
+            block_nr += 1;
+            continue;
+        }
         for byte in block {
             if image_detected {
                 if byte == JPEG_END_B2 && *image.last().unwrap_or(&DEFAULT) == JPEG_END_B1 {
@@ -28,6 +34,7 @@ fn recover_files(_device: fs::File, _path: &str) -> io::Result<()> {
                     images.push(image.clone());
                     image.clear();
                     image_detected = false;
+                    block_nr = 0;
                 } else {
                     image.push(byte);
                 }
@@ -42,10 +49,14 @@ fn recover_files(_device: fs::File, _path: &str) -> io::Result<()> {
                     println!("found image start");
                     image.push(byte);
                     image_detected = true;
+                    block_nr = 1;
                 } else if !image.is_empty() {
                     image.clear();
                 }
             }
+        }
+        if image_detected {
+            block_nr += 1;
         }
     }
 
