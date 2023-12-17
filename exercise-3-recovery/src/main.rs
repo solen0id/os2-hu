@@ -21,11 +21,25 @@ fn recover_files(_device: fs::File, _path: &str) -> io::Result<()> {
     let mut block_nr = 0;
 
     for block in e2fs.block_iter {
-        // skip non-data blocks
-        if block_nr == 13 || block_nr == 270 || block_nr == 65807 {
+        if image_detected {
             block_nr += 1;
+            print!("Block {}: ", block_nr);
+        }
+
+        // 1-12 direkte Datenblöcke
+        // 13 einfach indirekter inode - Block
+        if block_nr == 13 { print!("Skipped\n"); continue;}
+        // 14-269 einfach indirekte Datenblöcke
+        // 270 doppelt indirekter Block
+        if block_nr == 270 { print!("Skipped\n");continue;}
+        // Ab 270 1 einfach indirekter Block und 256 Datenblöcke abwechselnd
+        if block_nr > 270 && (block_nr - 270) % 257 == 1{ print!("Skipped\n"); continue; }
+
+        // TODO dreifach indirekte richtig behandeln -> für large image nicht nötig
+        if block_nr == 65807{
             continue;
         }
+        
         for byte in block {
             if image_detected {
                 if byte == JPEG_END_B2 && *image.last().unwrap_or(&DEFAULT) == JPEG_END_B1 {
@@ -54,9 +68,6 @@ fn recover_files(_device: fs::File, _path: &str) -> io::Result<()> {
                     image.clear();
                 }
             }
-        }
-        if image_detected {
-            block_nr += 1;
         }
     }
 
