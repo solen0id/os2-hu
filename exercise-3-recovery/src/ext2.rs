@@ -15,6 +15,7 @@ pub struct BlockIter {
     bitmap: Vec<u8>,
     data: Vec<Vec<u8>>,
     bitmap_ix: usize,
+    first_datablock_ix: usize,
     done: bool,
 }
 
@@ -113,18 +114,9 @@ impl Ext2FS {
             .expect("Could not read block bitmap bytes");
 
         // parse data blocks
-        let data_bytes_size: usize = bitmap_bytes.len() * 8 * blocksize;
-
-        // TODO: Investigate why setting data_bytes_offset=1024 produces a jpeg
-        // WITHOUT artefacts for small.img, but not any of the other file systems..?
-        //
-        // let data_bytes_offset = superblock.s_first_data_block * superblock.s_block_size;
-        let data_bytes_offset: u32 = 0;
-
-        let mut data_bytes: Vec<u8> = vec![0u8; data_bytes_size];
-
+        let mut data_bytes: Vec<u8> = vec![0u8; bitmap_bytes.len() * 8 * blocksize];
         let _bytes_read = file
-            .read_at(&mut data_bytes, data_bytes_offset.into())
+            .read_at(&mut data_bytes, 0)
             .expect("Could not read data block bytes");
         let nested_data_bytes: Vec<Vec<u8>> = data_bytes
             .chunks(blocksize)
@@ -137,6 +129,7 @@ impl Ext2FS {
             data: nested_data_bytes,
             bitmap_ix: 0,
             done: false,
+            first_datablock_ix: superblock.s_first_data_block.try_into().unwrap(),
         };
 
         Ext2FS {
@@ -193,7 +186,10 @@ impl Iterator for BlockIter {
             return None;
         }
 
-        let block = self.data.get(self.bitmap_ix).cloned();
+        let block = self
+            .data
+            .get(self.bitmap_ix + self.first_datablock_ix)
+            .cloned();
         self.bitmap_ix += 1;
 
         return block;
