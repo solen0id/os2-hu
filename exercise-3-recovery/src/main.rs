@@ -20,24 +20,40 @@ fn recover_files(_device: fs::File, _path: &str) -> io::Result<()> {
     let mut image_detected: bool = false;
     let mut block_nr = 0;
     let mut addresses_per_block = 0;
+    let mut indirect_address_block = 0;
+    let mut double_indirect_adress_block = 0;
+    let mut triple_indirect_adress_block = 0;
 
     for block in e2fs.block_iter {
         if addresses_per_block == 0 {
-            addresses_per_block = block.len();
+            addresses_per_block = block.len()/4;
+            indirect_address_block = 12+1;
+            double_indirect_adress_block = indirect_address_block + addresses_per_block +1;
+            triple_indirect_adress_block = double_indirect_adress_block + (addresses_per_block +1)*addresses_per_block +1;
+
         }
         if image_detected {
             block_nr += 1;
+            // 1-12 direct data-blocks
+            // skip indirect address block
+            if block_nr == indirect_address_block {println!("Skipped dir {}", block_nr); continue;}
+
+            // skip double indirect address block
+            if block_nr == double_indirect_adress_block {println!("Skipped dou {}", block_nr); continue;}
+            // skip indirect address blocks
+            if block_nr > double_indirect_adress_block && block_nr <triple_indirect_adress_block &&
+                (block_nr-double_indirect_adress_block) % (1+addresses_per_block) == 1 {println!("Skipped doudir {}", block_nr); continue; }
+            //if block_nr > 14+addresses_per_block/4 && (block_nr - (14+addresses_per_block/4)) % (1+addresses_per_block/4) == 1{ continue; }
+
+            // skip triple indirect address block
+            if block_nr == triple_indirect_adress_block {println!("Skipped tri {}", block_nr); continue;}
+            // skip double indirect address-blocks
+            if block_nr > triple_indirect_adress_block &&
+                (block_nr-triple_indirect_adress_block) % ((1+addresses_per_block)*addresses_per_block +1) == 1 {println!("Skipped tridou {}", block_nr); continue; }
+            // skip indirect address blocks
+            if  block_nr > triple_indirect_adress_block &&
+                (((block_nr - triple_indirect_adress_block - 1) % ((1+addresses_per_block)*addresses_per_block +1))-1)%(1+addresses_per_block) == 0 {println!("Skipped tridir {}", block_nr); continue;}
         }
-        // 1-12 direkte Datenblöcke
-        // 13 einfach indirekter Adressen-Block
-        if block_nr == 13 {continue;}
-        // In einem Block addressierbar viele Datenblöcke
-        // doppelt indirekter Block
-        if block_nr == 14+addresses_per_block/4 {continue;}
-        // einfach indirekter Block und 256 Datenblöcke abwechselnd
-        if block_nr > 14+addresses_per_block/4 && (block_nr - (14+addresses_per_block/4)) % (1+addresses_per_block/4) == 1{ continue; }
-        // TODO dreifach indirekte richtig behandeln -> für large image nicht nötig
-        
         for byte in block {
             if image_detected {
                 if byte == JPEG_END_B2 && *image.last().unwrap_or(&DEFAULT) == JPEG_END_B1 {
