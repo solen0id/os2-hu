@@ -19,26 +19,24 @@ fn recover_files(_device: fs::File, _path: &str) -> io::Result<()> {
     let mut image: Vec<u8> = Vec::new();
     let mut image_detected: bool = false;
     let mut block_nr = 0;
+    let mut addresses_per_block = 0;
 
     for block in e2fs.block_iter {
+        if addresses_per_block == 0 {
+            addresses_per_block = block.len();
+        }
         if image_detected {
             block_nr += 1;
-            print!("Block {}: ", block_nr);
         }
-
         // 1-12 direkte Datenblöcke
-        // 13 einfach indirekter inode - Block
-        if block_nr == 13 { print!("Skipped\n"); continue;}
-        // 14-269 einfach indirekte Datenblöcke
-        // 270 doppelt indirekter Block
-        if block_nr == 270 { print!("Skipped\n");continue;}
-        // Ab 270 1 einfach indirekter Block und 256 Datenblöcke abwechselnd
-        if block_nr > 270 && (block_nr - 270) % 257 == 1{ print!("Skipped\n"); continue; }
-
+        // 13 einfach indirekter Adressen-Block
+        if block_nr == 13 {continue;}
+        // In einem Block addressierbar viele Datenblöcke
+        // doppelt indirekter Block
+        if block_nr == 14+addresses_per_block/4 {continue;}
+        // einfach indirekter Block und 256 Datenblöcke abwechselnd
+        if block_nr > 14+addresses_per_block/4 && (block_nr - (14+addresses_per_block/4)) % (1+addresses_per_block/4) == 1{ continue; }
         // TODO dreifach indirekte richtig behandeln -> für large image nicht nötig
-        if block_nr == 65807{
-            continue;
-        }
         
         for byte in block {
             if image_detected {
