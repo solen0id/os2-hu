@@ -36,23 +36,23 @@ fn recover_files(_device: fs::File, _path: &str) -> io::Result<()> {
             block_nr += 1;
             // 1-12 direct data-blocks
             // skip indirect address block
-            if block_nr == indirect_address_block {println!("Skipped dir {}", block_nr); continue;}
+            if block_nr == indirect_address_block {continue;}
 
             // skip double indirect address block
-            if block_nr == double_indirect_adress_block {println!("Skipped dou {}", block_nr); continue;}
+            if block_nr == double_indirect_adress_block {continue;}
             // skip indirect address blocks
             if block_nr > double_indirect_adress_block && block_nr <triple_indirect_adress_block &&
-                (block_nr-double_indirect_adress_block) % (1+addresses_per_block) == 1 {println!("Skipped doudir {}", block_nr); continue; }
+                (block_nr-double_indirect_adress_block) % (1+addresses_per_block) == 1 {continue; }
             //if block_nr > 14+addresses_per_block/4 && (block_nr - (14+addresses_per_block/4)) % (1+addresses_per_block/4) == 1{ continue; }
 
             // skip triple indirect address block
-            if block_nr == triple_indirect_adress_block {println!("Skipped tri {}", block_nr); continue;}
+            if block_nr == triple_indirect_adress_block {continue;}
             // skip double indirect address-blocks
             if block_nr > triple_indirect_adress_block &&
-                (block_nr-triple_indirect_adress_block) % ((1+addresses_per_block)*addresses_per_block +1) == 1 {println!("Skipped tridou {}", block_nr); continue; }
+                (block_nr-triple_indirect_adress_block) % ((1+addresses_per_block)*addresses_per_block +1) == 1 { continue; }
             // skip indirect address blocks
             if  block_nr > triple_indirect_adress_block &&
-                (((block_nr - triple_indirect_adress_block - 1) % ((1+addresses_per_block)*addresses_per_block +1))-1)%(1+addresses_per_block) == 0 {println!("Skipped tridir {}", block_nr); continue;}
+                (((block_nr - triple_indirect_adress_block - 1) % ((1+addresses_per_block)*addresses_per_block +1))-1)%(1+addresses_per_block) == 0 {continue;}
         }
         for byte in block {
             if image_detected {
