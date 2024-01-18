@@ -5,15 +5,16 @@
 //! their metadata.
 
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     sync::{Arc, RwLock},
 };
 
+use rand::Rng;
+use tarpc::context::Context;
 use tracing::{info, instrument};
 
-use tarpc::context::Context;
-
-use crate::{ChunkMaster, Master};
+use crate::{chunk, ChunkMaster, Master};
 
 /// `GfsMaster` is a wrapper around `Inner` that provides thread-safe access.
 #[derive(Clone, Default, Debug)]
@@ -21,13 +22,56 @@ pub struct GfsMaster(Arc<RwLock<Inner>>);
 
 impl GfsMaster {
     pub fn new() -> Self {
-        // let inner = Inner::new();
-        // let locked = RwLock::new(inner);
-        // let arced = Arc::new(locked);
-
-        // return GfsMaster(arced);
-
         return Self(Arc::new(RwLock::new(Inner::default())));
+    }
+
+    pub fn add_chunk_server(&self, chunk_server_addr: SocketAddr) -> u64 {
+        let mut inner = self.0.write().unwrap();
+
+        // Assumption: ChunkServers live forever --> position in vector never changes
+        inner.chunk_servers.push(chunk_server_addr);
+        let chunk_server_id = inner.chunk_servers.len() - 1;
+
+        return chunk_server_id.try_into().unwrap();
+    }
+
+    pub fn add_url(&self, url: String, value: u64) {
+        let mut inner = self.0.try_write().unwrap();
+        inner.mapping.insert(url, value);
+    }
+
+    pub fn remove_url(&self, url: &String) {
+        let mut inner = self.0.write().unwrap();
+        let _ = inner.mapping.remove(url);
+    }
+
+    pub fn lookup_or_choose(&self, url: String) -> u64 {
+        let mut inner = self.0.write().unwrap();
+        let chunk_server_id = inner.mapping.get(&url);
+
+        match chunk_server_id {
+            Some(&id) => id,
+            None => {
+                let n_chunk_servers = inner.chunk_servers.len();
+                let random_chunk_server_id: u64 = rand::thread_rng()
+                    .gen_range(0..n_chunk_servers)
+                    .try_into()
+                    .unwrap();
+
+                inner.mapping.insert(url, random_chunk_server_id);
+
+                return random_chunk_server_id;
+            }
+        }
+    }
+
+    pub fn get_chunk_server_addr_for_id(&self, id: usize) -> SocketAddr {
+        let inner = self.0.read().unwrap();
+        let addr = inner
+            .chunk_servers
+            .get(id)
+            .expect("Illegal access to chunk server");
+        return addr.clone();
     }
 }
 
@@ -36,23 +80,17 @@ impl GfsMaster {
 /// respective chunk server addresses.
 #[derive(Default, Debug)]
 struct Inner {
-    chunk_servers: Vec<u64>,
+    chunk_servers: Vec<SocketAddr>,
+    mapping: HashMap<String, u64>,
 }
-
-// impl Inner {
-//     pub fn new() -> Self {
-//         Self {
-//             chunk_servers: true,
-//         }
-//     }
-// }
 
 // Implementation of the `Master` trait for `GfsMaster`.
 impl Master for GfsMaster {
     #[instrument]
     async fn lookup(self, _: Context, _url: String) -> SocketAddr {
         info!("Master::GfsMaster::lookup(_url={})", _url);
-        todo!();
+        let chunk_server_id = self.lookup_or_choose(_url);
+        return self.get_chunk_server_addr_for_id(chunk_server_id.try_into().unwrap());
     }
 }
 
@@ -64,7 +102,8 @@ impl ChunkMaster for GfsMaster {
             "ChunkMaster::GfsMaster::register(_socket_addr={})",
             _socket_addr
         );
-        return 11111;
+        let chunk_server_id = self.add_chunk_server(_socket_addr);
+        return chunk_server_id;
     }
 
     #[instrument]
@@ -73,10 +112,12 @@ impl ChunkMaster for GfsMaster {
             "ChunkMaster::GfsMaster::insert(_sender={}, _url={})",
             _sender, _url
         );
+        self.add_url(_url, _sender);
     }
 
     #[instrument]
     async fn remove(self, _: Context, _url: String) {
         info!("ChunkMaster::GfsMaster::remove(_url={})", _url);
+        self.remove_url(&_url);
     }
 }

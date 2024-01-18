@@ -3,6 +3,7 @@
 //! (data blocks) in the system.
 
 use futures::StreamExt;
+use rand::Rng;
 use std::{
     env,
     future::ready,
@@ -35,7 +36,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let master_client = ChunkMasterClient::new(client::Config::default(), transport).spawn();
 
     // open a channel for client commands
-    let client_addr = (IpAddr::V6(Ipv6Addr::LOCALHOST), 40000);
+    let client_ip = rand::thread_rng().gen_range(60000..64000);
+    let client_addr = (IpAddr::V6(Ipv6Addr::LOCALHOST), client_ip);
     let mut client_listener = listen(&client_addr, Json::default).await?;
 
     // initialize the chunk server
