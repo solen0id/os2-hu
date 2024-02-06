@@ -20,7 +20,7 @@ pub enum Command {
 	Accept(Channel<Command>),
 	
 	// TODO: add other useful control messages
-	
+
 	/// Checks the time since the last contact to the leader
 	CheckForTimeout {},
 
@@ -30,11 +30,11 @@ pub enum Command {
 	/// Start an election
 	Election{},
 	/// Call to vote
-	ElectMe { candidate_id: usize, last_entry_term: usize, last_entry_index: usize },
+	RequestVote { candidate_id: usize, candidate_turn: usize, last_entry_term: usize, last_entry_index: usize },
 	/// Accept candidate
-	VoteYes { origin_id: usize },
+	VoteYes { voter_id: usize },
 	/// Reject candidate
-	VoteNo { origin_id: usize },
+	VoteNo { voter_id: usize, voter_term: usize },
 
 	/// Periodically sending heartbeats
 	SendingHeartbeat{},

@@ -2,7 +2,6 @@
 
 use std::{env::args, fs, io, thread};
 use std::collections::HashMap;
-use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use rand::prelude::*;
@@ -34,20 +33,27 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 			// configure a span to associate log-entries with this network node
 			let _guard = trace_span!("NetworkNode", id = node.address);
 			let _guard = _guard.enter();
+
+			// State of the node
+			let mut state = State::Follower;
+
+			// Hashmap for faulty connections
 			let mut connections: HashMap<usize, Connection<Command>> = HashMap::new();
 			connections.insert(node.address, node.accept(node.channel()));
+
+			// Start timeout checking
+			let mut last_leader_contact = Instant::now();
+			let mut last_timeout = Instant::now();
+			let mut dynamic_waiting_time = 0;
 			let _ = connections.get(&node.address).unwrap().encode(Command::CheckForTimeout{});
+
+			// Leader and Election variables
 			let mut leader = node.address;
 			let mut current_term = 0;
 			let mut log_term = 0;
 			let mut log_index = 0;
 			let mut votes = 0;
-			let mut timemult = 0;
-			let mut last_leader_contact = Instant::now();
-			let mut last_timeout = Instant::now();
-			let mut dynamic_waiting_time = 0;
-			let mut state = State::Follower;
-			
+
 			// dispatching event loop
 			while let Ok(cmd) = node.decode(None) {
 				match cmd {
@@ -78,15 +84,19 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 					Command::CheckForTimeout {} => {
 						if state != State::Leader {
 							if last_leader_contact.elapsed() > Duration::from_millis(300) {
-								trace!("registered a timeout from the leader");
+								if state == State::Follower {
+									trace!("registered a timeout from the leader");
+								} else {
+									trace!("election timed out; return to follower status");
+									state = State::Follower;
+								}
 								// wait random amount before starting a new elecetion
 								last_timeout = Instant::now();
 								dynamic_waiting_time = rand::thread_rng().gen_range(1..300);
 								let _ = connections.get(&node.address).unwrap().encode(Command::Timeout {});
 
 							} else {
-								// Check every 50ms the status of the leader
-								sleep(Duration::from_millis(50*timemult));
+								// Check later again
 								let _ = connections.get(&node.address).unwrap().encode(Command::CheckForTimeout{});
 							}
 						}
@@ -102,75 +112,93 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 
 						if last_timeout.elapsed() > Duration::from_millis(dynamic_waiting_time) {
 							// start election if dynamic waiting time passed
-							let _ = connections.get(&node.address).unwrap().encode(Command::CheckForTimeout{});
 							let _ = connections.get(&node.address).unwrap().encode(Command::Election {});
+							let _ = connections.get(&node.address).unwrap().encode(Command::CheckForTimeout{});
 						} else {
-							// Check every 25ms again
-							sleep(Duration::from_millis(25*timemult));
+							// Check later again
 							let _ = connections.get(&node.address).unwrap().encode(Command::Timeout{});
 						}
 					}
 					// After 300ms + (1-300)ms join the election as candidate
 					Command::Election {} => {
-						trace!("joined the election as candidate");
-						// Reset votes
-						votes = 0;
+						trace!("joined the election as candidate for term {}", current_term+1);
+						// Reset votes (voted for himself)
+						votes = 1;
 						state = State::Candidate;
+						current_term += 1;
+						last_leader_contact = Instant::now();
 						// Inform all threads
 						for cons in &connections {
-							let _ = cons.1.encode(Command::ElectMe{
-								candidate_id: node.address,
-								last_entry_index: 0,
-								last_entry_term: 0});
+							if *cons.0 != node.address {
+								let _ = cons.1.encode(Command::RequestVote{
+									candidate_id: node.address,
+									candidate_turn: current_term,
+									last_entry_index: 0,
+									last_entry_term: 0});
+							}
 						}
 					}
-					// All threads are required to vote
-					Command::ElectMe { candidate_id, last_entry_term, last_entry_index } => {
-						if last_entry_term > log_term || (last_entry_term == log_term && last_entry_index >= log_index) {
-							trace!(origin = candidate_id, "support election");
-							// Reset timeout
-							last_leader_contact = Instant::now();
-							// Change to next term
-							current_term+=1; //-> is in Vote yes
-							// Send vote result to candidate
-							let _ = connections.get(&candidate_id).unwrap().encode(Command::VoteYes {origin_id: node.address});
+					// Request to vote for the sending candidate
+					Command::RequestVote { candidate_id, candidate_turn, last_entry_term, last_entry_index } => {
+						// ignore older requests
+						if candidate_turn>current_term {
+							if state == State::Leader {
+								trace!(origin = candidate_id, "Resigned since new term detected (RequestVote)");
+								state = State::Follower;
+							}
+
+							if last_entry_term > log_term || (last_entry_term == log_term && last_entry_index >= log_index) {
+								trace!(origin = candidate_id, "support election");
+								// Reset timeout
+								last_leader_contact = Instant::now();
+								// Change to next term -> can only vote once per term
+								current_term = candidate_turn;
+								// Send vote result to candidate
+								let _ = connections.get(&candidate_id).unwrap().encode(Command::VoteYes {voter_id: node.address});
+							} else {
+								trace!(origin = candidate_id, "denied election => log issues");
+								let _ = connections.get(&candidate_id).unwrap().encode(Command::VoteNo {voter_id: node.address, voter_term: current_term});
+							}
 						} else {
-							trace!(origin = candidate_id, "denied election");
-							let _ = connections.get(&candidate_id).unwrap().encode(Command::VoteNo {origin_id: node.address});
+							trace!(origin = candidate_id, "denied election => already voted for this term");
+							let _ = connections.get(&candidate_id).unwrap().encode(Command::VoteNo {voter_id: node.address, voter_term: current_term});
 						}
 					}
 					// Receiving a positive vote
-					Command::VoteYes { origin_id } => {
-						trace!(origin = origin_id, "Received pos Vote");
+					Command::VoteYes { voter_id } => {
+						trace!(origin = voter_id, "Received pos Vote");
 						votes += 1;
 						// Received enough votes
-						if(votes > office_count/2){
-							//current_term+=1;
-							votes = 0;
+						if (votes > office_count/2) & (state == State::Candidate) {
 							state = State::Leader;
-							trace!("is the new leader for term {}", current_term);
+							info!("is the new leader for term {}", current_term);
 							let _ = connections.get(&node.address).unwrap().encode(Command::SendingHeartbeat{});
 						}
 					}
 
 					// Receiving a negative vote
-					Command::VoteNo { origin_id } => {
-						trace!(origin = origin_id, "Received neg Vote");
+					Command::VoteNo { voter_id, voter_term } => {
+						trace!(origin = voter_id, "Received neg Vote");
+						if voter_term> current_term {
+							state = State::Follower;
+							trace!(origin = voter_id, "cancel candidate status since new term detected");
+						}
 					}
 
 					// Sending heartbeats every 250ms
 					Command::SendingHeartbeat {} => {
-						if last_leader_contact.elapsed() > Duration::from_millis(250) {
-							trace!("sends hearbeats to all followers");
-							for cons in &connections {
-								let _ = cons.1.encode(Command::HeartBeat{ leader_term: current_term});
+						if  state == State::Leader {
+							if last_leader_contact.elapsed() > Duration::from_millis(250) {
+								trace!("sends hearbeats to all followers");
+								for cons in &connections {
+									let _ = cons.1.encode(Command::HeartBeat{ leader_term: current_term});
+								}
+								last_leader_contact = Instant::now();
+								let _ = connections.get(&node.address).unwrap().encode(Command::SendingHeartbeat{});
+							} else {
+								// Check later again
+								let _ = connections.get(&node.address).unwrap().encode(Command::SendingHeartbeat{});
 							}
-							last_leader_contact = Instant::now();
-							let _ = connections.get(&node.address).unwrap().encode(Command::SendingHeartbeat{});
-						} else {
-							// Check every 10ms again
-							sleep(Duration::from_millis(10*timemult));
-							let _ = connections.get(&node.address).unwrap().encode(Command::SendingHeartbeat{});
 						}
 					}
 					// Can be merged into Append
@@ -180,7 +208,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 							if current_term<leader_term {
 								state = State::Follower;
 								current_term=leader_term;
-								trace!("Resigned in favor of new leader");
+								trace!("Resigned in favor of new leader (heartbeat)");
 								last_leader_contact = Instant::now();
 								let _ = connections.get(&node.address).unwrap().encode(Command::CheckForTimeout{});
 							}
@@ -191,10 +219,10 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 						}
 						else if state == State::Candidate {
 							// Resign if a new leader is found
-							if current_term-1<=leader_term {
+							if current_term<=leader_term {
 								state = State::Follower;
 								current_term=leader_term;
-								trace!("Cancel Election in favor of current or new leader");
+								trace!("Cancel candidate status in favor of current or new leader");
 								last_leader_contact = Instant::now();
 								let _ = connections.get(&node.address).unwrap().encode(Command::CheckForTimeout{});
 							}
