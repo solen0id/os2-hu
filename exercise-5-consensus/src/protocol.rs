@@ -5,13 +5,21 @@ use crate::network::Channel;
 #[derive(Debug)]
 pub enum Command {
     /// Open an account with a unique name.
-    Open { account: String },
+    Open {
+        account: String,
+    },
 
     /// Deposit money into an account.
-    Deposit { account: String, amount: usize },
+    Deposit {
+        account: String,
+        amount: usize,
+    },
 
     /// Withdraw money from an account.
-    Withdraw { account: String, amount: usize },
+    Withdraw {
+        account: String,
+        amount: usize,
+    },
 
     /// Transfer money between accounts.
     Transfer {
@@ -23,48 +31,33 @@ pub enum Command {
     /// Accept a new network connection.
     Accept(Channel<Command>),
 
-    // TODO: add other useful control messages
-    /// Checks the time since the last contact to the leader
-    CheckForTimeout {},
+    NOOP,
 
-    /// After a timeout wait for another 1-299 ms before starting an election
-    Timeout {},
+    AppendEntriesRequest {
+        term: usize,
+        leader_id: usize,
+        prev_log_index: usize,
+        prev_log_term: usize,
+        entries: Vec<(usize, Command)>,
+        leader_commit: usize,
+    },
 
-    /// Start an election
-    Election {},
+    AppendEntriesResponse {
+        term: usize,
+        success: bool,
+    },
 
-    /// Call to vote
-    ElectMe {
+    RequestVoteRequest {
+        term: usize,
         candidate_id: usize,
-        last_entry_term: usize,
-        last_entry_index: usize,
+        last_log_index: usize,
+        last_log_term: usize,
     },
 
-    /// Accept candidate
-    VoteYes { origin_id: usize },
-
-    /// Reject candidate
-    VoteNo { origin_id: usize },
-
-    /// Periodically sending heartbeats
-    SendingHeartbeat {},
-
-    /// Heartbeat -> TODO add payload
-    HeartBeat { leader_term: usize },
-
-    Append {
-        current_command: Box<Command>,
-        last_command: Box<Command>,
+    RequestVoteResponse {
+        term: usize,
+        vote_granted: bool,
     },
-    //Commit
-}
-
-// TODO: add other useful structures and implementations
-#[derive(Debug, PartialEq)]
-pub enum State {
-    Leader,
-    Candidate,
-    Follower,
 }
 
 /// Helper macro for defining test-scenarios.
