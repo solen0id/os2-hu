@@ -1,8 +1,10 @@
 //! Contains code for locally simulating a network with unreliable connections.
 
 use std::{cell::Cell, fmt, fs, io::{self, Write}, path, time::{Instant, Duration}};
+use std::collections::HashMap;
 use std::sync::{Arc, mpsc};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::protocol::{Command, LogEntry, State, Transaction};
 
 /// Constant that causes an artificial delay in the relaying of messages.
 const NETWORK_DELAY: Duration = Duration::from_millis(10);
@@ -25,7 +27,26 @@ pub struct NetworkNode<T> {
 	log_file: fs::File,
 	
 	/// Number of entries in the logfile.
-	log_entry_no: Cell<u32>
+	log_entry_no: Cell<u32>,
+
+	/// State of Node: Follower/Candidate/Leader
+	pub state: State,
+	/// Current term of node
+	pub  current_term: usize,
+	/// Checks if the node voted in this current_term
+	pub  vote_granted: bool,
+	/// Connections to all other nodes
+	pub  connections: Vec<Option<Connection<Command>>>,
+	/// Non-committed log entries
+	pub  log: Vec<LogEntry>,
+	/// Index of log-entries that is committed
+	pub commit_index: usize,
+	/// number of requests the node received
+	pub request_counter: usize,
+	/// Received request that needs to be send to the leader
+	pub request_buffer: Vec<LogEntry>,
+
+	pub local_bank_db: HashMap<String, usize>,
 }
 
 /// Reliable channel to a network node.
@@ -58,14 +79,39 @@ pub struct Connection<T> {
 
 impl<T> NetworkNode<T> {
 	/// Creates a new network node and stores logfile in the specified path.
-	pub fn new<P: AsRef<path::Path>>(address: usize, path: P) -> io::Result<Self> {
+	pub fn new<P: AsRef<path::Path>>(address: usize, path: P, offices: usize) -> io::Result<Self> {
 		Ok(Self {
 			partition: Arc::new(AtomicUsize::new(0)),
 			channel: mpsc::channel(),
 			address,
 			log_file: fs::File::create(path.as_ref().join(address.to_string() + ".log"))?,
-			log_entry_no: Cell::new(0)
+			log_entry_no: Cell::new(0),
+			state: State::Follower,
+			current_term: 0,
+			vote_granted: false,
+			connections: Vec::new(), //vec![None; offices],
+			// Create first entry to avoid index errors when comparing to last entry
+			log: vec![LogEntry{ command_type: Transaction::Heartbeat,
+								acc1: "".to_string(),
+								acc2: "".to_string(),
+								amount: 0,
+								term: 0,
+								origin_id: 0,
+								origin_nr: 0};1],
+			// Default entry is committed
+			commit_index: 0,
+			request_buffer: Vec::new(),
+			local_bank_db: HashMap::new(),
+			request_counter: 0,
 		})
+	}
+
+
+	/// Tries to send a command via a channel
+	pub fn send(&self, cmd: Command, rec_address: usize){
+		if !self.connections[rec_address].is_none() {
+			let _ = self.connections[rec_address].as_ref().unwrap().encode(cmd);
+		}
 	}
 	
 	/// Creates a new (reliable) channel to this network node.
@@ -158,10 +204,10 @@ impl<T> Connection<T> {
 	/// if the sender and the receiver are not in the same partition.
 	pub fn encode(&self, t: T) -> Result<(), mpsc::SendError<T>> {
 		use Ordering::SeqCst as Order;
-		
+
 		// prevent a data race here by checking if the operation is local first
 		if Arc::ptr_eq(&self.src, &self.dst)
-		|| self.src.load(Order) == self.dst.load(Order) {
+			|| self.src.load(Order) == self.dst.load(Order) {
 			self.port.send(t)
 		} else {
 			Err(mpsc::SendError(t))

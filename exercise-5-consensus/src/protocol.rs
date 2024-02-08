@@ -1,4 +1,5 @@
 //! Contains the network-message-types for the consensus protocol and banking application.
+use std::collections::HashMap;
 use crate::network::Channel;
 
 /// Message-type of the network protocol.
@@ -30,7 +31,7 @@ pub enum Command {
 	/// Start an election
 	Election{},
 	/// Call to vote
-	RequestVote { candidate_id: usize, candidate_turn: usize, last_entry_term: usize, last_entry_index: usize },
+	RequestVote { candidate_id: usize, candidate_term: usize, last_log_term: usize, last_log_index: usize },
 	/// Accept candidate
 	VoteYes { voter_id: usize },
 	/// Reject candidate
@@ -40,10 +41,17 @@ pub enum Command {
 	SendingHeartbeat{},
 
 	/// Heartbeat -> TODO add payload
-	HeartBeat { leader_term: usize },
-	Append { current_command: Box<Command>, last_command: Box<Command> },
+	AppendEntry { leader_term: usize, leader_id: usize, leader_commit: usize, last_entry: LogEntry, current_entry: LogEntry },
+	AppendEntryResponse { success: bool, term: usize, responder_id: usize, responder_index: usize },
 
-	//Commit
+	/// Forward Command
+	ForwardedCommand { forwarded: LogEntry, origin_id: usize },
+
+	//ResultForwarding { success: bool },
+	//ReceiveCommand { forwarded: LogEntry },
+
+	/// Empty Command for Heartbeat
+	HeartBeat {}
 
 }
 
@@ -55,7 +63,84 @@ pub enum State {
 	Candidate,
 	Follower
 }
+#[derive(Debug)]
+#[derive(Clone)]
+#[derive(PartialEq)]
+pub enum Transaction {
+	Heartbeat,
+	Open,
+	Deposit,
+	Transfer,
+	Withdraw
+}
+#[derive(Debug)]
+#[derive(Clone)]
+pub struct LogEntry {
+	// Entry
+	pub command_type: Transaction,
+	pub acc1: String,
+	pub acc2: String,
+	pub amount: usize,
+	// term in which it was appended to the log
+	pub term: usize,
+	// Identification for the entry
+	pub origin_id: usize,
+	pub origin_nr: usize,
+}
 
+pub fn compare_log_entries(entry_1: &LogEntry, entry_2: &LogEntry) -> bool{
+	if (entry_1.origin_id == entry_2.origin_id) & (entry_1.origin_nr == entry_2.origin_nr) {
+		return true;
+	}
+	return false;
+}
+pub fn commit(entry: LogEntry, mut bank_db: &mut HashMap<String, usize>) -> String{
+	match entry.command_type {
+		Transaction::Open => {
+			if bank_db.contains_key(&entry.acc1){
+				return format!("Err[_=>{}]: Das Konto '{}' existiert bereits.", entry.acc1.clone(), entry.acc1.clone());
+			} else {
+				bank_db.insert(entry.acc1.clone(), 0);
+				return format!("Ok[_=>{}]: Das Konto '{}' wurde erstellt.", entry.acc1.clone(), entry.acc1);
+			}
+		},
+		Transaction::Deposit => {
+			if !bank_db.contains_key(&entry.acc1){
+				return format!("Err[{}=>+{}€]: Das Konto '{}' existiert nicht.", entry.acc1.clone(), entry.amount, entry.acc1.clone());
+			} else {
+				*bank_db.get_mut(&entry.acc1).unwrap() += entry.amount;
+				println!("Neuer Wert: {}",bank_db.get(&entry.acc1).unwrap());
+				return format!("Ok[{}=>+{}€]: Dem Konto '{}' wurden {}€ gutgeschrieben.", entry.acc1.clone(), entry.amount, entry.acc1.clone(), entry.amount);
+			}
+		},
+		Transaction::Transfer => {
+			if !bank_db.contains_key(&entry.acc1){
+				return format!("Err[{}={}€=>{}]: Das Konto '{}' existiert nicht.", entry.acc1.clone(), entry.amount, entry.acc2.clone(), entry.acc1.clone());
+			} else if !bank_db.contains_key(&entry.acc2){
+				return format!("Err[{}={}€=>{}]: Das Konto '{}' existiert nicht.", entry.acc1.clone(), entry.amount, entry.acc2.clone(), entry.acc2.clone());
+			} else if bank_db.get(&entry.acc1).unwrap() < &entry.amount {
+				return format!("Err[{}={}€=>{}]: Das Konto '{}' enthält keine {}€.", entry.acc1.clone(), entry.amount, entry.acc2.clone(), entry.acc1.clone(), entry.amount);
+			} else {
+				*bank_db.get_mut(&entry.acc1).unwrap() -= entry.amount;
+				*bank_db.get_mut(&entry.acc2).unwrap() += entry.amount;
+				return format!("Ok[{}={}€=>{}]: Dem Konto '{}' wurden {}€ vom Konto '{}' überwiesen.", entry.acc1.clone(), entry.amount, entry.acc2.clone(), entry.acc2.clone(), entry.amount, entry.acc1.clone());
+			}
+		},
+		Transaction::Withdraw => {
+			if !bank_db.contains_key(&entry.acc1){
+				return format!("Err[{}=>-{}€]: Das Konto '{}' existiert nicht.", entry.acc1.clone(), entry.amount, entry.acc1.clone());
+			} else if bank_db.get(&entry.acc1).unwrap() < &entry.amount {
+				return format!("Err[{}=>-{}€]: Das Konto '{}' enthält keine {}€.", entry.acc1.clone(), entry.amount, entry.acc1.clone(), entry.amount);
+			} else {
+				let current_value = bank_db.get(&entry.acc1).unwrap() - entry.amount;
+				*bank_db.get_mut(&entry.acc1).unwrap() -= entry.amount;
+				return format!("Ok[{}=>-{}€]: Vom Konto '{}' wurden {}€ abgehoben.", entry.acc1.clone(), entry.amount, entry.acc1.clone(), entry.amount);
+			}
+		},
+		_ => {}
+	}
+	return  "".to_string();
+}
 
 /// Helper macro for defining test-scenarios.
 /// 
