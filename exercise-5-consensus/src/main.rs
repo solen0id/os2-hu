@@ -41,7 +41,6 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
             let heartbeat_send_interval = Duration::from_millis(100);
 
             // used to retrying/forwarding client commands to leader
-            // let mut last_client_command: Option<Command> = None;
             let mut command_buffer: VecDeque<Command> = VecDeque::new();
             let mut last_client_command_retry = Instant::now() - Duration::from_secs(1);
             let client_command_retry_interval = Duration::from_millis(100);
@@ -54,7 +53,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                 match node.state {
                     State::Follower => {
                         if node.last_heartbeat.elapsed() > node.heartbeat_timeout {
-                            debug!("missed heartbeat, converting to candidate state");
+                            trace!("missed heartbeat, converting to candidate state");
                             node.become_candidate();
                             node.start_election();
                         }
@@ -62,7 +61,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 
                     State::Candidate => {
                         if node.last_election_start.elapsed() > node.election_timeout {
-                            debug!("election timeout, starting new election");
+                            trace!("election timeout, starting new election");
                             node.become_candidate();
                             node.start_election();
                         }
@@ -70,11 +69,15 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 
                     State::Leader => {
                         if last_leader_heartbeat_send.elapsed() > heartbeat_send_interval {
+                            trace!("sending heartbeat");
                             last_leader_heartbeat_send = Instant::now();
                             node.send_heartbeat();
                         }
                     }
                 }
+
+                // If commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine (§5.3)
+                node.apply_commited_entry_to_log_if_possible();
 
                 // replay any buffered commands after the retry interval
                 if !command_buffer.is_empty()
@@ -91,8 +94,9 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 command_buffer.push_front(cmd);
                             }
                         }
-                        last_client_command_retry = Instant::now();
                     }
+
+                    last_client_command_retry = Instant::now();
                 }
 
                 while let Ok(cmd) = node.decode(Some(Instant::now() + cq_timeout)) {
@@ -100,7 +104,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                         // customer requests
                         Command::Open { account } => {
                             if !node.is_leader() {
-                                debug!("forwarding open account request to leader");
+                                trace!("forwarding open account request to leader");
 
                                 if !node.try_forward_to_leader(cmd.clone()) {
                                     command_buffer.push_back(cmd);
@@ -108,11 +112,12 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 
                                 continue;
                             }
-                            info!("request to open an account for {:?}", account);
+                            debug!("request to open an account for {:?}", account);
                         }
+
                         Command::Deposit { account, amount } => {
                             if !node.is_leader() {
-                                debug!("forwarding deposit request to leader");
+                                trace!("forwarding deposit request to leader");
 
                                 if !node.try_forward_to_leader(cmd.clone()) {
                                     command_buffer.push_back(cmd);
@@ -120,11 +125,12 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 
                                 continue;
                             }
-                            info!(amount, ?account, "request to deposit");
+                            debug!(amount, ?account, "request to deposit");
                         }
+
                         Command::Withdraw { account, amount } => {
                             if !node.is_leader() {
-                                debug!("forwarding withdraw request to leader");
+                                trace!("forwarding withdraw request to leader");
 
                                 if !node.try_forward_to_leader(cmd.clone()) {
                                     command_buffer.push_back(cmd);
@@ -132,11 +138,12 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 
                                 continue;
                             }
-                            info!(amount, ?account, "request to withdraw");
+                            debug!(amount, ?account, "request to withdraw");
                         }
+
                         Command::Transfer { src, dst, amount } => {
                             if !node.is_leader() {
-                                debug!("forwarding withdraw request to leader");
+                                trace!("forwarding withdraw request to leader");
 
                                 if !node.try_forward_to_leader(cmd.clone()) {
                                     command_buffer.push_back(cmd);
@@ -144,12 +151,10 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 
                                 continue;
                             }
-                            info!(amount, ?src, ?dst, "request to transfer");
+                            debug!(amount, ?src, ?dst, "request to transfer");
                         }
 
-                        Command::NOOP => {
-                            continue;
-                        }
+                        // Control commands
 
                         // Accept a new channel
                         Command::Accept(channel) => {
@@ -164,13 +169,15 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                             last_log_index,
                             last_log_term,
                         } => {
+                            trace!(term, candidate_id, "received vote request");
+
                             // check if the term on the responder is greater than our own,
                             // and if so convert from candidate to follower
                             node.check_term_and_convert_to_follower_if_needed(term);
 
                             // don't grant vote if the term is less than our current term
                             if term < node.current_term {
-                                debug!(term, "no vote, term is less than current term");
+                                trace!(term, "no vote, term is less than current term");
                                 node.send_vote(candidate_id, false);
                             }
 
@@ -179,16 +186,16 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 || (last_log_term == node.get_prev_log_term()
                                     && last_log_index < node.get_prev_log_index())
                             {
-                                debug!(last_log_term, "no vote, candidate log is not up-to-date");
+                                trace!(last_log_term, "no vote, candidate log is not up-to-date");
                                 node.send_vote(candidate_id, false);
                             }
 
                             if node.voted_for.is_none() || node.voted_for == Some(candidate_id) {
                                 node.voted_for = Some(candidate_id);
-                                debug!(node.voted_for, "yes vote for candidate");
+                                trace!(node.voted_for, "yes vote for candidate");
                                 node.send_vote(candidate_id, true);
                             } else {
-                                debug!(
+                                trace!(
                                     node.voted_for,
                                     "no vote, already voted for another candidate"
                                 );
@@ -198,7 +205,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 
                         // Request for votes
                         Command::RequestVoteResponse { term, vote_granted } => {
-                            // debug!(term, vote_granted, "received vote response");
+                            trace!(term, vote_granted, "received vote response");
 
                             // check if the term on the responder is greater than our own,
                             // and if so convert from candidate to follower and do not
@@ -224,7 +231,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                             leader_commit,
                         } => {
                             if entries.is_empty() {
-                                debug!(
+                                trace!(
                                     term,
                                     leader_id,
                                     // prev_log_index,
@@ -233,7 +240,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                     "received heartbeat"
                                 );
                             } else {
-                                debug!(
+                                trace!(
                                     term,
                                     leader_id,
                                     prev_log_index,
@@ -243,7 +250,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 );
                             }
 
-                            // could be a function
+                            // TODO: make this a function
                             node.last_heartbeat = Instant::now();
                             node.current_leader = Some(leader_id);
 
@@ -254,16 +261,74 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                             // check if current node is a candidate and the heartbeat
                             // comes from a leader, and if so convert to follower
                             if node.is_candidate() && term >= node.current_term {
-                                debug!(
+                                trace!(
                                     leader_id,
                                     "candidate received append entries, converting to follower"
                                 );
                                 node.become_follower();
                             }
+
+                            // reply false if the term is less than our current term
+                            if term < node.current_term {
+                                trace!(
+                                    term,
+                                    "reject append entries, term is less than current term"
+                                );
+                                node.send_append_entries_response(node.current_term, false);
+                                continue;
+                            }
+
+                            if entries.is_empty() {
+                                // heartbeat, nothing to append
+                                continue;
+                            }
+
+                            let last_new_entry = entries.last().unwrap();
+
+                            // Reply false if log doesn’t contain an entry at prevLogIndex
+                            // whose term matches prevLogTerm
+                            match node.get_log_entry_at_index(prev_log_index) {
+                                None => {
+                                    // an initial append should work, even though the
+                                    // log is empty which means we can't fetch the
+                                    // previous log entry
+                                    if prev_log_index == 0 && node.get_prev_log_index() == 0 {
+                                        //append!
+                                        node.append_entries_to_log(entries.clone());
+                                        node.set_commit_index(leader_commit, last_new_entry.index);
+                                        node.send_append_entries_response(node.current_term, true);
+                                    } else {
+                                        trace!(
+                                            prev_log_index,
+                                            prev_log_term,
+                                            "reject append entries, log does not contain previous entry"
+                                        );
+                                        node.send_append_entries_response(node.current_term, false);
+                                        continue;
+                                    }
+                                }
+                                Some(entry) => {
+                                    if entry.term != prev_log_term {
+                                        trace!(
+                                            prev_log_index,
+                                            prev_log_term,
+                                            entry.term,
+                                            "reject append entries, term of prevoious entry does not match"
+                                        );
+                                        node.send_append_entries_response(node.current_term, false);
+                                        continue;
+                                    } else {
+                                        // append!
+                                        node.append_entries_to_log(entries.clone());
+                                        node.set_commit_index(leader_commit, last_new_entry.index);
+                                        node.send_append_entries_response(node.current_term, true);
+                                    }
+                                }
+                            }
                         }
 
                         Command::AppendEntriesResponse { term, success } => {
-                            debug!(term, success, "received append entries response");
+                            trace!(term, success, "received append entries response");
 
                             // check if the term on the responder is greater than our own,
                             // and if so convert from candidate to follower

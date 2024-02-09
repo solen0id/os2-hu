@@ -6,12 +6,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::{
     cell::Cell,
+    cmp::min,
     fmt, fs,
     io::{self, Write},
     path,
     time::{Duration, Instant},
 };
-use tracing::{debug, info, trace, trace_span};
+use tracing::{debug, trace, trace_span};
 
 use crate::protocol::Command;
 
@@ -25,10 +26,11 @@ pub enum State {
     Follower,
 }
 
+#[derive(Debug, Clone)]
 pub struct LogEntry {
-    term: usize,
-    index: usize,
-    command: Command,
+    pub term: usize,
+    pub index: usize,
+    pub command: Command,
 }
 
 /// Virtual node in a virtual network.
@@ -170,7 +172,7 @@ impl<T> NetworkNode<T> {
     }
 
     pub fn become_leader(&mut self) {
-        info!(self.address, "becoming leader");
+        debug!(self.address, "becoming leader");
         self.state = State::Leader;
         self.voted_for = None;
 
@@ -198,16 +200,17 @@ impl<T> NetworkNode<T> {
     }
 
     pub fn start_election(&mut self) {
-        debug!("starting election");
+        trace!("starting election");
         self.last_election_start = Instant::now();
         self.send_vote_requests();
     }
 
     pub fn check_term_and_convert_to_follower_if_needed(&mut self, term: usize) -> bool {
         if term > self.current_term {
-            debug!(
+            trace!(
                 self.current_term,
-                term, "term is outdated, accepting new term converting to follower"
+                term,
+                "term is outdated, accepting new term converting to follower"
             );
             self.current_term = term;
             self.become_follower();
@@ -216,17 +219,14 @@ impl<T> NetworkNode<T> {
         return false;
     }
 
-    pub fn apply_commited_if_possible(&mut self) -> bool {
-        if self.commit_index > self.last_applied {
+    pub fn apply_commited_entry_to_log_if_possible(&mut self) {
+        while self.commit_index > self.last_applied {
             // apply log entries
-            // let entry = self.log_get_at_index(self.last_applied);
-            // TODO: apply entry
 
+            let entry = self.get_log_entry_at_index(self.last_applied).unwrap();
+            self.append(&entry);
             self.last_applied += 1;
-
-            return true;
         }
-        return false;
     }
 
     pub fn add_vote(&mut self) {
@@ -234,7 +234,12 @@ impl<T> NetworkNode<T> {
     }
 
     pub fn check_if_election_won_and_become_leader(&mut self) -> bool {
-        if self.votes > self.votes_needed_to_win() {
+        let votes_needed = self.votes_needed_to_win();
+
+        trace!(self.votes, votes_needed, "checking if election won");
+
+        if self.votes >= votes_needed {
+            trace!(self.address, "election won");
             self.become_leader();
             return true;
         }
@@ -242,22 +247,56 @@ impl<T> NetworkNode<T> {
     }
 
     pub fn votes_needed_to_win(&self) -> usize {
-        self.connections.len() / 2
+        // 3 nodes --> 2 votes needed to win
+        // 4 nodes --> 3 votes needed to win
+        // 5 nodes --> 3 votes needed to win
+        // 6 nodes --> 4 votes needed to win
+
+        (self.connections.len() + 1) / 2
     }
 
     pub fn get_prev_log_index(&self) -> usize {
         // Returns the index of the log entry immediately preceding new ones
-        // return self.last_log_index.get() as usize;
+        // starting with 0 for an empty log
         return self.working_memory_log.len();
     }
 
     pub fn get_prev_log_term(&self) -> usize {
         // Returns the term of the log entry immediately preceding new ones
-        // TODO: implement
-
+        // starting with 0 for an empty log
         match self.working_memory_log.last() {
             Some(entry) => entry.term,
             None => 0,
+        }
+    }
+
+    pub fn get_log_entry_at_index(&self, index: usize) -> Option<&LogEntry> {
+        if index == 0 || self.working_memory_log.is_empty() || index > self.working_memory_log.len()
+        {
+            return None;
+        }
+
+        // subtract 1 because the index in the paper starts at is 1
+        return self.working_memory_log.get(index - 1);
+    }
+
+    pub fn append_entries_to_log(&mut self, entries: Vec<LogEntry>) {
+        // at this point we are already sure that the previous entry
+        // is the same as the one on the leader
+
+        // remove all entries starting from the index of the first new entry
+        // and append the new entries
+        let insert_index = entries[0].index - 1; // log index in the paper starts at 1
+
+        self.working_memory_log.truncate(insert_index);
+        self.working_memory_log.extend(entries);
+    }
+
+    pub fn set_commit_index(&mut self, leader_commit_index: usize, last_append_entry_index: usize) {
+        // leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+
+        if leader_commit_index > self.commit_index {
+            self.commit_index = min(leader_commit_index, last_append_entry_index);
         }
     }
 
@@ -291,6 +330,13 @@ impl<T> NetworkNode<T> {
             term: self.current_term,
             vote_granted,
         });
+    }
+
+    pub fn send_append_entries_response(&self, term: usize, success: bool) {
+        // we take care to set the leader id to the current leader before calling this
+        // function so well cheekily unwrap without checking here
+        let connection = self.connections.get(&self.current_leader.unwrap()).unwrap();
+        let _ = connection.encode(Command::AppendEntriesResponse { term, success });
     }
 
     pub fn try_forward_to_leader(&self, command: Command) -> bool {

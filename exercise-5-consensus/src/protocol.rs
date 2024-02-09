@@ -1,5 +1,5 @@
 //! Contains the network-message-types for the consensus protocol and banking application.
-use crate::network::Channel;
+use crate::network::{Channel, LogEntry};
 
 /// Message-type of the network protocol.
 #[derive(Debug, Clone)]
@@ -31,14 +31,12 @@ pub enum Command {
     /// Accept a new network connection.
     Accept(Channel<Command>),
 
-    NOOP,
-
     AppendEntriesRequest {
         term: usize,
         leader_id: usize,
         prev_log_index: usize,
         prev_log_term: usize,
-        entries: Vec<(usize, Command)>,
+        entries: Vec<LogEntry>,
         leader_commit: usize,
     },
 
