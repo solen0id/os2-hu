@@ -2,7 +2,7 @@
 use crate::network::Channel;
 
 /// Message-type of the network protocol.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Command {
     /// Open an account with a unique name.
     Open {

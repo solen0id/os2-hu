@@ -11,8 +11,7 @@ use std::{
     path,
     time::{Duration, Instant},
 };
-use tracing::{debug, trace, trace_span};
-
+use tracing::{debug, info, trace, trace_span};
 
 use crate::protocol::Command;
 
@@ -24,6 +23,12 @@ pub enum State {
     Leader,
     Candidate,
     Follower,
+}
+
+pub struct LogEntry {
+    term: usize,
+    index: usize,
+    command: Command,
 }
 
 /// Virtual node in a virtual network.
@@ -40,8 +45,11 @@ pub struct NetworkNode<T> {
     /// Useful to identify this node in messages to other nodes.
     pub address: usize,
 
-    /// Logfile to store committed entries in.
+    /// Logfile to store committed entries in, can not be changed.
     log_file: fs::File,
+
+    /// In-memory log of the node, can be overwritten/changed by leader.
+    working_memory_log: Vec<LogEntry>,
 
     /// Number of entries in the logfile.
     last_log_index: Cell<u32>,
@@ -84,10 +92,11 @@ pub struct NetworkNode<T> {
     /// for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
     match_index: HashMap<usize, usize>,
 
-    /// Volatile state on candidates, reinitialized after election
-
     /// number of received votes
     votes: usize,
+
+    /// current leader
+    pub current_leader: Option<usize>,
 }
 
 /// Reliable channel to a network node.
@@ -121,16 +130,23 @@ pub struct Connection<T> {
 impl<T> NetworkNode<T> {
     /// Creates a new network node and stores logfile in the specified path.
     pub fn new<P: AsRef<path::Path>>(address: usize, path: P) -> io::Result<Self> {
+        // we use a slightly larger range for the election timeout than the paper suggests
+        // for easier testing and debugging
+        let timeout = rand::thread_rng().gen_range(300..500);
+
         let node = Self {
             partition: Arc::new(AtomicUsize::new(0)),
             channel: mpsc::channel(),
             address,
             log_file: fs::File::create(path.as_ref().join(address.to_string() + ".log"))?,
+            working_memory_log: vec![],
             last_log_index: Cell::new(0),
             connections: HashMap::new(),
             state: State::Follower,
-            heartbeat_timeout: Duration::from_millis(rand::thread_rng().gen_range(300..500)),
-            election_timeout: Duration::from_millis(rand::thread_rng().gen_range(150..300)),
+            heartbeat_timeout: Duration::from_millis(timeout),
+            election_timeout: Duration::from_millis(
+                rand::thread_rng().gen_range(timeout..2 * timeout),
+            ),
             last_heartbeat: Instant::now(),
             last_election_start: Instant::now(),
             current_term: 0,
@@ -140,6 +156,7 @@ impl<T> NetworkNode<T> {
             next_index: HashMap::new(),
             match_index: HashMap::new(),
             votes: 0,
+            current_leader: None,
         };
         Ok(node)
     }
@@ -153,7 +170,7 @@ impl<T> NetworkNode<T> {
     }
 
     pub fn become_leader(&mut self) {
-        debug!(self.address, "becoming leader");
+        info!(self.address, "becoming leader");
         self.state = State::Leader;
         self.voted_for = None;
 
@@ -230,14 +247,18 @@ impl<T> NetworkNode<T> {
 
     pub fn get_prev_log_index(&self) -> usize {
         // Returns the index of the log entry immediately preceding new ones
-        // TODO: implement
-        0
+        // return self.last_log_index.get() as usize;
+        return self.working_memory_log.len();
     }
 
     pub fn get_prev_log_term(&self) -> usize {
         // Returns the term of the log entry immediately preceding new ones
         // TODO: implement
-        0
+
+        match self.working_memory_log.last() {
+            Some(entry) => entry.term,
+            None => 0,
+        }
     }
 
     pub fn send_heartbeat(&self) {
@@ -270,6 +291,39 @@ impl<T> NetworkNode<T> {
             term: self.current_term,
             vote_granted,
         });
+    }
+
+    pub fn try_forward_to_leader(&self, command: Command) -> bool {
+        match self.current_leader {
+            Some(leader_id) => {
+                let connection = self.connections.get(&leader_id).unwrap();
+                match connection.encode(command) {
+                    Ok(_) => {
+                        debug!("successfully forwarded command to leader");
+                        return true;
+                    }
+                    Err(_) => {
+                        // let _ = self.connections.get(&self.address).unwrap().encode(command);
+                        return false;
+                    }
+                }
+            }
+            None => {
+                // let _ = self.connections.get(&self.address).unwrap().encode(command);
+                return false;
+            }
+        }
+    }
+
+    pub fn send_self(&self, command: Command) {
+        match self.connections.get(&self.address).unwrap().encode(command) {
+            Ok(_) => {
+                //  debug!(self.address, "successfully sent command to self");
+            }
+            Err(_) => {
+                debug!(self.address, "failed to send command to self");
+            }
+        }
     }
 
     /// Creates a new (reliable) channel to this network node.

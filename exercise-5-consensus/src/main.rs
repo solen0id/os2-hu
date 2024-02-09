@@ -1,17 +1,12 @@
 //! Implementation of the Raft Consensus Protocol for a banking application.
 
 use core::time;
-use std::{
-    env::args,
-    fs, io,
-    thread::{self},
-};
+use std::{collections::VecDeque, env::args, fs, io, thread};
 
 use rand::prelude::*;
 use std::time::{Duration, Instant};
 #[allow(unused_imports)]
 use tracing::{debug, info, trace, trace_span, Level};
-
 
 use crate::network::State;
 use network::{daemon, Channel, NetworkNode};
@@ -29,14 +24,31 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 
     // create various network nodes and start them
     for address in 0..office_count {
-        let mut node = NetworkNode::new(address, &log_path)?;
+        let mut node: NetworkNode<Command> = NetworkNode::new(address, &log_path)?;
         channels.push(node.channel());
 
         thread::spawn(move || {
             // configure a span to associate log-entries with this network node
             let _guard = trace_span!("NetworkNode", id = node.address);
             let _guard = _guard.enter();
+
+            // connect to self, needed for command retries
+            node.connections
+                .insert(node.address, node.accept(node.channel()));
+
+            // used to only send one heartbeat every 100ms
             let mut last_leader_heartbeat_send = Instant::now();
+            let heartbeat_send_interval = Duration::from_millis(100);
+
+            // used to retrying/forwarding client commands to leader
+            // let mut last_client_command: Option<Command> = None;
+            let mut command_buffer: VecDeque<Command> = VecDeque::new();
+            let mut last_client_command_retry = Instant::now() - Duration::from_secs(1);
+            let client_command_retry_interval = Duration::from_millis(100);
+
+            // set a timeout on Command Queue processing,
+            // so we can check the node state periodically
+            let cq_timeout = time::Duration::from_millis(20);
 
             loop {
                 match node.state {
@@ -57,34 +69,85 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                     }
 
                     State::Leader => {
-                        if last_leader_heartbeat_send.elapsed() > Duration::from_millis(150) {
+                        if last_leader_heartbeat_send.elapsed() > heartbeat_send_interval {
                             last_leader_heartbeat_send = Instant::now();
                             node.send_heartbeat();
                         }
                     }
                 }
 
-                // set a timeout so we can check the state periodically
-                let timeout = time::Duration::from_millis(20);
+                // replay any buffered commands after the retry interval
+                if !command_buffer.is_empty()
+                    && last_client_command_retry.elapsed() > client_command_retry_interval
+                {
+                    if node.is_leader() {
+                        while let Some(cmd) = command_buffer.pop_front() {
+                            let _ = node.send_self(cmd);
+                        }
+                    } else {
+                        // node is not leader, retry forwarding the command
+                        if let Some(cmd) = command_buffer.pop_front() {
+                            if !node.try_forward_to_leader(cmd.clone()) {
+                                command_buffer.push_front(cmd);
+                            }
+                        }
+                        last_client_command_retry = Instant::now();
+                    }
+                }
 
-                while let Ok(cmd) = node.decode(Some(Instant::now() + timeout)) {
-                    match cmd {
+                while let Ok(cmd) = node.decode(Some(Instant::now() + cq_timeout)) {
+                    match cmd.clone() {
                         // customer requests
                         Command::Open { account } => {
-                            debug!("request to open an account for {:?}", account);
+                            if !node.is_leader() {
+                                debug!("forwarding open account request to leader");
+
+                                if !node.try_forward_to_leader(cmd.clone()) {
+                                    command_buffer.push_back(cmd);
+                                }
+
+                                continue;
+                            }
+                            info!("request to open an account for {:?}", account);
                         }
                         Command::Deposit { account, amount } => {
-                            debug!(amount, ?account, "request to deposit");
+                            if !node.is_leader() {
+                                debug!("forwarding deposit request to leader");
+
+                                if !node.try_forward_to_leader(cmd.clone()) {
+                                    command_buffer.push_back(cmd);
+                                }
+
+                                continue;
+                            }
+                            info!(amount, ?account, "request to deposit");
                         }
                         Command::Withdraw { account, amount } => {
-                            debug!(amount, ?account, "request to withdraw");
+                            if !node.is_leader() {
+                                debug!("forwarding withdraw request to leader");
+
+                                if !node.try_forward_to_leader(cmd.clone()) {
+                                    command_buffer.push_back(cmd);
+                                }
+
+                                continue;
+                            }
+                            info!(amount, ?account, "request to withdraw");
                         }
                         Command::Transfer { src, dst, amount } => {
-                            debug!(amount, ?src, ?dst, "request to transfer");
+                            if !node.is_leader() {
+                                debug!("forwarding withdraw request to leader");
+
+                                if !node.try_forward_to_leader(cmd.clone()) {
+                                    command_buffer.push_back(cmd);
+                                }
+
+                                continue;
+                            }
+                            info!(amount, ?src, ?dst, "request to transfer");
                         }
 
                         Command::NOOP => {
-                            // debug!("NOOP");
                             continue;
                         }
 
@@ -98,33 +161,28 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                         Command::RequestVoteRequest {
                             term,
                             candidate_id,
-                            last_log_index: _,
-                            last_log_term: _,
+                            last_log_index,
+                            last_log_term,
                         } => {
-                            // debug!(
-                            //     term,
-                            //     candidate_id,
-                            //     last_log_index,
-                            //     last_log_term,
-                            //     "received vote request"
-                            // );
-
-                            // reset the timer
-                            // debug!("received vote request, resetting leader timeout");
-
-                            // if node.last_heartbeat.elapsed() < node.heartbeat_timeout {
-                            //     debug!("ignoring vote, still connected to a live leader");
-                            //     node.send_vote(candidate_id, false);
-                            //     continue;
-                            // }
-
                             // check if the term on the responder is greater than our own,
                             // and if so convert from candidate to follower
-                            if node.check_term_and_convert_to_follower_if_needed(term) {
+                            node.check_term_and_convert_to_follower_if_needed(term);
+
+                            // don't grant vote if the term is less than our current term
+                            if term < node.current_term {
+                                debug!(term, "no vote, term is less than current term");
                                 node.send_vote(candidate_id, false);
                             }
 
-                            // TODO: check if the responder has a log that is at least as up-to-date as our own
+                            // only grant vote, if candidate log is at least as up-to-date as our own
+                            if last_log_term < node.get_prev_log_term()
+                                || (last_log_term == node.get_prev_log_term()
+                                    && last_log_index < node.get_prev_log_index())
+                            {
+                                debug!(last_log_term, "no vote, candidate log is not up-to-date");
+                                node.send_vote(candidate_id, false);
+                            }
+
                             if node.voted_for.is_none() || node.voted_for == Some(candidate_id) {
                                 node.voted_for = Some(candidate_id);
                                 debug!(node.voted_for, "yes vote for candidate");
@@ -136,15 +194,6 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 );
                                 node.send_vote(candidate_id, false);
                             }
-
-                            // // check if the responder has a log that is at least as up-to-date as our own
-                            // let log_up_to_date = node.check_log_up_to_date(last_log_index, last_log_term);
-                            // if log_up_to_date {
-                            //     node.reset_election_timeout();
-                            //     node.send_vote(candidate_id, true);
-                            // } else {
-                            //     node.send_vote(candidate_id, false);
-                            // }
                         }
 
                         // Request for votes
@@ -194,14 +243,17 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 );
                             }
 
+                            // could be a function
                             node.last_heartbeat = Instant::now();
+                            node.current_leader = Some(leader_id);
 
                             // check if the term on the responder is greater than our
                             // own, and if so update term and become follower
                             node.check_term_and_convert_to_follower_if_needed(term);
 
-                            // check if current node is a candidate, and if so convert to follower
-                            if node.is_candidate() {
+                            // check if current node is a candidate and the heartbeat
+                            // comes from a leader, and if so convert to follower
+                            if node.is_candidate() && term >= node.current_term {
                                 debug!(
                                     leader_id,
                                     "candidate received append entries, converting to follower"
