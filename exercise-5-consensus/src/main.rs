@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use rand::prelude::*;
+use rand_distr::num_traits::{AsPrimitive, ToPrimitive};
 #[allow(unused_imports)]
 use tracing::{debug, info, Level, trace, trace_span};
 
@@ -15,6 +16,9 @@ use crate::protocol::{commit, compare_log_entries, Transaction};
 
 pub mod network;
 pub mod protocol;
+
+/// Delay between timeouts
+const TIMEOUT_DELAY: u64 = 150;
 
 /// Creates and connects a number of branch offices for the bank.
 pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Channel<Command>>> {
@@ -41,8 +45,6 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 			node.send(Command::CheckForTimeout {}, address);
 
 			// Hashmap for faulty connections
-			//let mut connections: HashMap<usize, Connection<Command>> = HashMap::new();
-			//connections.insert(node.address, node.accept(node.channel()));
 			let mut follower_logs: Vec<usize> = vec![0; office_count];
 			let mut followerIndex: HashMap<usize, usize> = HashMap::new();
 			followerIndex.insert(node.address, 0);
@@ -54,8 +56,6 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 
 			// Leader and Election variables
 			let mut leader = node.address;
-			let mut current_term = 0;
-			let mut voted = false;
 			let mut votes = 0;
 
 			let mut request_in_log = false;
@@ -71,12 +71,12 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 												acc1: account.clone(),
 												acc2: "".to_string(),
 												amount: 0,
-												term: current_term,
+												term: node.current_term,
 												origin_id: node.address,
 												origin_nr: node.request_counter };
 						node.request_counter += 1;
 						node.request_buffer.push(msg.clone());
-						node.send(Command::ForwardedCommand{forwarded: msg, origin_id: address}, leader);
+						//node.send(Command::ForwardedCommand{forwarded: msg, origin_id: address}, leader);
 					}
 					Command::Deposit { account, amount } => {
 						debug!(amount, ?account, "request to deposit");
@@ -85,12 +85,12 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 							acc1: account.clone(),
 							acc2: "".to_string(),
 							amount: amount,
-							term: current_term,
+							term: node.current_term,
 							origin_id: node.address,
 							origin_nr: node.request_counter };
 						node.request_counter += 1;
 						node.request_buffer.push(msg.clone());
-						node.send(Command::ForwardedCommand{forwarded: msg, origin_id: address}, leader);
+						//node.send(Command::ForwardedCommand{forwarded: msg, origin_id: address}, leader);
 					}
 					Command::Withdraw { account, amount } => {
 						debug!(amount, ?account, "request to withdraw");
@@ -99,12 +99,12 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 							acc1: account.clone(),
 							acc2: "".to_string(),
 							amount: amount,
-							term: current_term,
+							term: node.current_term,
 							origin_id: node.address,
 							origin_nr: node.request_counter };
 						node.request_counter += 1;
 						node.request_buffer.push(msg.clone());
-						node.send(Command::ForwardedCommand{forwarded: msg, origin_id: address}, leader);
+						//node.send(Command::ForwardedCommand{forwarded: msg, origin_id: address}, leader);
 					}
 					Command::Transfer { src, dst, amount } => {
 						debug!(amount, ?src, ?dst, "request to transfer");
@@ -113,12 +113,12 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 							acc1: src.clone(),
 							acc2: dst.clone(),
 							amount: amount,
-							term: current_term,
+							term: node.current_term,
 							origin_id: node.address,
 							origin_nr: node.request_counter };
 						node.request_counter += 1;
 						node.request_buffer.push(msg.clone());
-						node.send(Command::ForwardedCommand{forwarded: msg, origin_id: address}, leader);
+						//node.send(Command::ForwardedCommand{forwarded: msg, origin_id: address}, leader);
 					}
 					
 					// control messages
@@ -132,7 +132,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 					// Check periodically if a timeout happened
 					Command::CheckForTimeout {} => {
 						if node.state != State::Leader {
-							if last_leader_contact.elapsed() > Duration::from_millis(300) {
+							if last_leader_contact.elapsed() > Duration::from_millis(TIMEOUT_DELAY) {
 								if node.state == State::Follower {
 									trace!("registered a timeout from the leader");
 								} else {
@@ -141,7 +141,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 								}
 								// wait random amount before starting a new elecetion
 								last_timeout = Instant::now();
-								dynamic_waiting_time = rand::thread_rng().gen_range(1..300);
+								dynamic_waiting_time = rand::thread_rng().gen_range(1..TIMEOUT_DELAY);
 								node.send(Command::Timeout{}, address);
 
 							} else {
@@ -153,7 +153,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 					// Check if during the dynamic waiting time a candidate was elected
 					Command::Timeout {} => {
 						// Check if another leader has already been found
-						if last_leader_contact.elapsed() < Duration::from_millis(300) {
+						if last_leader_contact.elapsed() < Duration::from_millis(TIMEOUT_DELAY) {
 							// Return to normal follower behaviour
 							node.send(Command::CheckForTimeout{}, address);
 							continue;
@@ -170,18 +170,18 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 					}
 					// After 300ms + (1-300)ms join the election as candidate
 					Command::Election {} => {
-						trace!("joined the election as candidate for term {}", current_term+1);
+						trace!("joined the election as candidate for term {}", node.current_term+1);
 						// Reset votes (voted for himself)
 						votes = 1;
 						node.state = State::Candidate;
-						current_term += 1;
+						node.current_term += 1;
 						last_leader_contact = Instant::now();
 						// Inform all threads
 						for address in 0..office_count {
 							if address != node.address {
 								node.send(Command::RequestVote{
 									candidate_id: node.address,
-									candidate_term: current_term,
+									candidate_term: node.current_term,
 									last_log_index: node.log.len(),
 									last_log_term: node.log.last().unwrap().term}, address);
 							}
@@ -191,7 +191,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 					Command::RequestVote { candidate_id, candidate_term, last_log_term, last_log_index } => {
 
 						// ignore older requests
-						if (candidate_term>current_term) | ((candidate_term==current_term) & !voted) {
+						if (candidate_term>node.current_term) | ((candidate_term==node.current_term) & !node.vote_granted) {
 							if node.state == State::Leader {
 								trace!(origin = candidate_id, "Resigned since new term detected (RequestVote)");
 								node.state = State::Follower;
@@ -202,21 +202,21 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 								// Reset timeout
 								last_leader_contact = Instant::now();
 								// Change to next term -> can only vote once per term
-								current_term = candidate_term;
-								voted = true;
+								node.current_term = candidate_term;
+								node.vote_granted = true;
 								// Send vote result to candidate
 								node.send(Command::VoteYes {voter_id: node.address}, candidate_id);
 							} else {
 								trace!(origin = candidate_id, "denied election => log issues");
-								if candidate_term > current_term {
-									current_term = candidate_term;
-									voted = false;
+								if candidate_term > node.current_term {
+									node.current_term = candidate_term;
+									node.vote_granted = false;
 								}
-								node.send(Command::VoteNo {voter_id: node.address, voter_term: current_term}, candidate_id);
+								node.send(Command::VoteNo {voter_id: node.address, voter_term: node.current_term}, candidate_id);
 							}
 						} else {
 							trace!(origin = candidate_id, "denied election => already voted for this term");
-							node.send(Command::VoteNo {voter_id: node.address, voter_term: current_term}, candidate_id);
+							node.send(Command::VoteNo {voter_id: node.address, voter_term: node.current_term}, candidate_id);
 						}
 					}
 					// Receiving a positive vote
@@ -226,7 +226,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 						// Received enough votes
 						if (votes > office_count/2) & (node.state == State::Candidate) {
 							node.state = State::Leader;
-							info!("is the new leader for term {}", current_term);
+							info!("is the new leader for term {}", node.current_term);
 							node.send(Command::SendingHeartbeat {}, node.address);
 						}
 					}
@@ -234,7 +234,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 					// Receiving a negative vote
 					Command::VoteNo { voter_id, voter_term } => {
 						trace!(origin = voter_id, "Received neg Vote");
-						if voter_term> current_term {
+						if voter_term> node.current_term {
 							node.state = State::Follower;
 							trace!(origin = voter_id, "cancel candidate status since new term detected");
 						}
@@ -243,11 +243,11 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 					// Sending heartbeats every 250ms
 					Command::SendingHeartbeat {} => {
 						if  node.state == State::Leader {
-							if last_leader_contact.elapsed() > Duration::from_millis(250) {
+							if last_leader_contact.elapsed() > Duration::from_millis(TIMEOUT_DELAY*4/5) {
 								trace!("sends hearbeats to all followers");
 								for address in 0..office_count {
 									node.send(Command::AppendEntry{
-										leader_term: current_term,
+										leader_term: node.current_term,
 										leader_commit: node.commit_index,
 										leader_id: node.address,
 										last_entry: node.log.last().unwrap().clone(),
@@ -270,18 +270,18 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 					//
 					Command::AppendEntry { leader_term , leader_id, leader_commit, last_entry, current_entry} => {
 						// ignore commands from old leaders
-						if current_term > leader_term {
+						if node.current_term > leader_term {
 							node.send(Command::AppendEntryResponse {
 								success: false,
 								term: node.current_term,
 								responder_id: node.address,
-								responder_index: node.log.len(),
+								responder_index: node.log.len()-1,
 							}, leader_id);
 							trace!(origin = leader_id, "Received AppendEntry from old leader (term {})", leader_term);
 							continue;
 						}
 						// sender is the leader of the current term
-						else if current_term == leader_term {
+						else if node.current_term == leader_term {
 							last_leader_contact = Instant::now();
 							// Other candidates must return to follower status
 							if node.state==State::Candidate {
@@ -291,10 +291,10 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 							}
 						}
 						// sender is the leader of a new term
-						else if current_term < leader_term {
+						else if node.current_term < leader_term {
 							trace!(origin = leader_id, "Accept new leader (term {})", leader_term);
-							current_term=leader_term;
-							voted = false;
+							node.current_term=leader_term;
+							node.vote_granted = false;
 							last_leader_contact = Instant::now();
 							leader = leader_id;
 							// Other candidates and leaders must return to follower status
@@ -305,12 +305,13 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 						}
 
 						// Check log consistency if the leader was valid
-						if (node.log.last().unwrap().origin_id == last_entry.origin_id) & (node.log.last().unwrap().origin_nr == last_entry.origin_nr) {
+						if compare_log_entries(node.log.last().unwrap(), &last_entry) {
+						//if (node.log.last().unwrap().origin_id == last_entry.origin_id) & (node.log.last().unwrap().origin_nr == last_entry.origin_nr) {
 							if current_entry.command_type == Transaction::Heartbeat {
 								trace!("Was empty heartbeat; Log consistent");
 								node.send(Command::AppendEntryResponse {
 									success: true,
-									term: current_term,
+									term: node.current_term,
 									responder_id: node.address,
 									responder_index: node.log.len()-1	}, leader_id);
 							} else {
@@ -329,7 +330,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 								}
 								node.send(Command::AppendEntryResponse {
 									success: true,
-									term: current_term,
+									term: node.current_term,
 									responder_id: node.address,
 									responder_index: node.log.len()-1	}, leader_id);
 							}
@@ -338,15 +339,24 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 								node.commit_index += 1;
 								if node.request_buffer.len()>0{
 									trace!("Compare to data");
-									if compare_log_entries(&current_entry, node.request_buffer.first().unwrap()) {
+									if compare_log_entries(&node.log[node.commit_index], node.request_buffer.first().unwrap()) {
 										trace!("Remove saved entry");
 										request_in_log = false;
 										node.request_buffer.remove(0);
+									} else {
+										trace!("Other entry do not remove saved entry");
 									}
 								}
 								trace!("committed log entry {}", node.commit_index);
 								let str = commit(node.log[node.commit_index].clone(), &mut node.local_bank_db);
 								node.append(&str);
+							}
+
+							if !node.request_buffer.is_empty() & !request_in_log {
+								trace!("input buffer non-empty; repeat sending");
+								node.send(Command::ForwardedCommand{
+									forwarded: node.request_buffer.first().unwrap().clone(),
+									origin_id: node.address}, leader_id);
 							}
 						} else {
 							if node.commit_index < node.log.len()-1 {
@@ -357,23 +367,17 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 							}
 							node.send(Command::AppendEntryResponse {
 								success: false,
-								term: current_term,
+								term: node.current_term,
 								responder_id: node.address,
 								responder_index: node.commit_index }, leader_id);
 						}
 
-						if !node.request_buffer.is_empty() & !request_in_log {
-							trace!("input buffer non-empty; repeat sending");
-							node.send(Command::ForwardedCommand{
-								forwarded: node.request_buffer.first().unwrap().clone(),
-								origin_id: node.address}, leader_id);
-						}
 
 					}
 					Command::AppendEntryResponse { success, term, responder_id, responder_index } => {
-						if term > current_term {
-							current_term = term;
-							voted = false;
+						if term > node.current_term {
+							node.current_term = term;
+							node.vote_granted = false;
 							node.state = State::Follower;
 						} else {
 							// Remember each log state of each follower
@@ -392,7 +396,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 							// Send additional log entries to each follower who is missing entries
 							if responder_index<node.log.len()-1{
 								node.send(Command::AppendEntry{
-									leader_term: current_term,
+									leader_term: node.current_term,
 									leader_commit: node.commit_index,
 									leader_id: node.address,
 									last_entry: node.log.get(responder_index).unwrap().clone(),
@@ -405,11 +409,12 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
 						trace!("received repeat from {} - {} - {}", origin_id, follower_logs[origin_id], node.log.len());
 						if (node.state == State::Leader) & (follower_logs[origin_id] == node.log.len()-1)  {
 							trace!("sends received command to all followers");
-							forwarded.term = current_term;
+							forwarded.term = node.current_term;
+							last_leader_contact = Instant::now();
 							for address in 0..office_count {
 								if address != node.address {
 									node.send(Command::AppendEntry{
-										leader_term: current_term,
+										leader_term: node.current_term,
 										leader_commit: node.commit_index,
 										leader_id: node.address,
 										last_entry: node.log.last().unwrap().clone(),

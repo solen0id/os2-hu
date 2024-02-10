@@ -101,8 +101,8 @@ impl<T> NetworkNode<T> {
 			// Default entry is committed
 			commit_index: 0,
 			request_buffer: Vec::new(),
-			local_bank_db: HashMap::new(),
 			request_counter: 0,
+			local_bank_db: HashMap::new(),
 		})
 	}
 
