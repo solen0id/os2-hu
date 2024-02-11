@@ -12,7 +12,7 @@ use std::{
     path,
     time::{Duration, Instant},
 };
-use tracing::{debug, trace, trace_span};
+use tracing::{debug, info, trace, trace_span};
 
 use crate::protocol::Command;
 
@@ -81,18 +81,18 @@ pub struct NetworkNode<T> {
     pub voted_for: Option<usize>,
 
     /// index of highest log entry known to be committed (initialized to 0, increases monotonically)
-    commit_index: usize,
+    pub commit_index: usize,
 
     /// index of highest log entry applied to state machine (initialized to 0, increases monotonically)
-    last_applied: usize,
+    pub last_applied: usize,
 
     /// Volatile state on leaders, reinitialized after election
 
     /// for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
-    next_index: HashMap<usize, usize>,
+    pub next_index: HashMap<usize, usize>,
 
     /// for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
-    match_index: HashMap<usize, usize>,
+    pub match_index: HashMap<usize, usize>,
 
     /// number of received votes
     votes: usize,
@@ -173,13 +173,23 @@ impl<T> NetworkNode<T> {
 
     pub fn become_leader(&mut self) {
         debug!(self.address, "becoming leader");
+
         self.state = State::Leader;
         self.voted_for = None;
 
+        self.reset_next_index();
+        self.reset_match_index();
+    }
+
+    fn reset_next_index(&mut self) {
         for (address, _) in self.connections.iter() {
             self.next_index
                 .insert(*address, self.last_log_index.get() as usize + 1);
+        }
+    }
 
+    fn reset_match_index(&mut self) {
+        for (address, _) in self.connections.iter() {
             self.match_index.insert(*address, 0);
         }
     }
@@ -223,8 +233,13 @@ impl<T> NetworkNode<T> {
         while self.commit_index > self.last_applied {
             // apply log entries
 
-            let entry = self.get_log_entry_at_index(self.last_applied).unwrap();
+            let entry = self.get_log_entry_at_index(self.last_applied + 1).unwrap();
             self.append(&entry);
+
+            if self.is_leader() {
+                info!(self.address, "applying log entry to state machine");
+            }
+
             self.last_applied += 1;
         }
     }
@@ -252,12 +267,13 @@ impl<T> NetworkNode<T> {
         // 5 nodes --> 3 votes needed to win
         // 6 nodes --> 4 votes needed to win
 
-        (self.connections.len() + 1) / 2
+        (self.connections.len() + 1).div_ceil(2)
     }
 
     pub fn get_prev_log_index(&self) -> usize {
         // Returns the index of the log entry immediately preceding new ones
-        // starting with 0 for an empty log
+        // starting with 0 for an empty log and 1 for a log with one entry
+        // (log index in the paper starts at 1)
         return self.working_memory_log.len();
     }
 
@@ -276,8 +292,13 @@ impl<T> NetworkNode<T> {
             return None;
         }
 
-        // subtract 1 because the index in the paper starts at is 1
+        // subtract 1 because the index in the paper starts at 1
+        // but our vector is zero indexed
         return self.working_memory_log.get(index - 1);
+    }
+
+    pub fn append_entry_to_log(&mut self, entry: LogEntry) {
+        self.working_memory_log.push(entry.clone());
     }
 
     pub fn append_entries_to_log(&mut self, entries: Vec<LogEntry>) {
@@ -286,30 +307,96 @@ impl<T> NetworkNode<T> {
 
         // remove all entries starting from the index of the first new entry
         // and append the new entries
-        let insert_index = entries[0].index - 1; // log index in the paper starts at 1
+        let insert_index = entries[0].index;
 
-        self.working_memory_log.truncate(insert_index);
+        if insert_index > 1 {
+            // subtract another 1, because we only want to keep old entries
+            // with indices lower than the first new entry
+            self.working_memory_log.truncate(insert_index - 1);
+        } else {
+            self.working_memory_log.clear();
+        }
         self.working_memory_log.extend(entries);
     }
 
-    pub fn set_commit_index(&mut self, leader_commit_index: usize, last_append_entry_index: usize) {
+    pub fn set_commit_index(&mut self, leader_commit_index: usize) {
         // leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+        let last_append_entry_index = self.working_memory_log.len();
 
         if leader_commit_index > self.commit_index {
             self.commit_index = min(leader_commit_index, last_append_entry_index);
         }
     }
 
+    pub fn increment_next_index(&mut self, address: usize) {
+        if let Some(next_index) = self.next_index.get_mut(&address) {
+            *next_index += 1;
+        }
+    }
+
+    pub fn decrement_next_index(&mut self, address: usize) {
+        let next_index = self.next_index.get_mut(&address).unwrap();
+
+        if next_index > &mut 0 {
+            *next_index -= 1;
+        } else {
+            *next_index = 0;
+        }
+    }
+
+    pub fn increment_match_index(&mut self, address: usize) {
+        let match_index = self.match_index.get_mut(&address).unwrap();
+        *match_index += 1;
+    }
+
+    pub fn advance_commit_index_if_possible(&mut self) {
+        let match_indexes: Vec<usize> = self
+            .match_index
+            .values()
+            .map(|x| *x)
+            .collect::<Vec<usize>>();
+
+        // count the number of indices
+        let mut counter: HashMap<usize, usize> = HashMap::new();
+        for elem in match_indexes.iter() {
+            *counter.entry(*elem).or_default() += 1;
+        }
+
+        // sort counter map by highest value
+        let mut counter_vec: Vec<(usize, usize)> = counter.into_iter().collect();
+        counter_vec.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // get the majority index
+        let hightest_count_index = counter_vec[0].0;
+        let highest_count = counter_vec[0].1;
+
+        if highest_count >= self.votes_needed_to_win() && hightest_count_index > self.commit_index {
+            match self.get_log_entry_at_index(hightest_count_index) {
+                Some(entry) => {
+                    if entry.term == self.current_term {
+                        self.commit_index = hightest_count_index;
+                    }
+                }
+                None => {
+                    // this should probably not happen!
+                    debug!("no log entry at index {}", hightest_count_index);
+                }
+            }
+        }
+    }
+
     pub fn send_heartbeat(&self) {
-        for (_address, connection) in self.connections.iter() {
-            let _ = connection.encode(Command::AppendEntriesRequest {
-                term: self.current_term,
-                leader_id: self.address,
-                prev_log_index: self.get_prev_log_index(),
-                prev_log_term: self.get_prev_log_term(),
-                entries: vec![],
-                leader_commit: self.commit_index,
-            });
+        for (address, connection) in self.connections.iter() {
+            if address != &self.address {
+                let _ = connection.encode(Command::AppendEntriesRequest {
+                    term: self.current_term,
+                    leader_id: self.address,
+                    prev_log_index: self.get_prev_log_index(),
+                    prev_log_term: self.get_prev_log_term(),
+                    entries: vec![],
+                    leader_commit: self.commit_index,
+                });
+            }
         }
     }
 
@@ -332,20 +419,68 @@ impl<T> NetworkNode<T> {
         });
     }
 
+    pub fn send_append_entries_request(&self, address: usize) {
+        if address == self.address {
+            return;
+        }
+
+        let connection = self.connections.get(&address).unwrap();
+        let next_index = self.next_index.get(&address).unwrap();
+        let leader_commit = self.commit_index;
+
+        if next_index <= &1 {
+            // cant get log at index 0, we must be at the beginning
+            let prev_log_index: usize = 0;
+            let prev_log_term: usize = 0;
+            let _ = connection.encode(Command::AppendEntriesRequest {
+                term: self.current_term,
+                leader_id: self.address,
+                prev_log_index,
+                prev_log_term,
+                entries: self.working_memory_log.clone(),
+                leader_commit,
+            });
+        } else {
+            let prev_log_index = next_index - 1;
+            let prev_log_term = self.get_log_entry_at_index(next_index - 1).unwrap().term;
+            let _ = connection.encode(Command::AppendEntriesRequest {
+                term: self.current_term,
+                leader_id: self.address,
+                prev_log_index,
+                prev_log_term,
+                entries: self.working_memory_log[*next_index - 1..].to_vec(),
+                leader_commit,
+            });
+        }
+    }
+
     pub fn send_append_entries_response(&self, term: usize, success: bool) {
         // we take care to set the leader id to the current leader before calling this
         // function so well cheekily unwrap without checking here
         let connection = self.connections.get(&self.current_leader.unwrap()).unwrap();
-        let _ = connection.encode(Command::AppendEntriesResponse { term, success });
+        let _ = connection.encode(Command::AppendEntriesResponse {
+            term,
+            success,
+            sender_id: self.address,
+            sender_last_match_index: self.working_memory_log.len(),
+        });
+    }
+
+    pub fn send_append_entries_request_to_all_followers(&self) {
+        for (follower_address, next_index) in self.next_index.iter() {
+            if *follower_address != self.address && &self.get_prev_log_index() >= next_index {
+                self.send_append_entries_request(*follower_address);
+            }
+        }
     }
 
     pub fn try_forward_to_leader(&self, command: Command) -> bool {
         match self.current_leader {
             Some(leader_id) => {
                 let connection = self.connections.get(&leader_id).unwrap();
-                match connection.encode(command) {
+                match connection.encode(command.clone()) {
                     Ok(_) => {
-                        debug!("successfully forwarded command to leader");
+                        debug!("successfully forwarded command {:?} to leader", command);
                         return true;
                     }
                     Err(_) => {

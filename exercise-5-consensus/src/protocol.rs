@@ -43,6 +43,8 @@ pub enum Command {
     AppendEntriesResponse {
         term: usize,
         success: bool,
+        sender_id: usize,
+        sender_last_match_index: usize,
     },
 
     RequestVoteRequest {

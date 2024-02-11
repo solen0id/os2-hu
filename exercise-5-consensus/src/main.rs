@@ -1,15 +1,15 @@
 //! Implementation of the Raft Consensus Protocol for a banking application.
 
+#[allow(unused_imports)]
 use core::time;
 use std::{collections::VecDeque, env::args, fs, io, thread};
 
 use rand::prelude::*;
 use std::time::{Duration, Instant};
-#[allow(unused_imports)]
-use tracing::{debug, info, trace, trace_span, Level};
+use tracing::{debug, trace, trace_span, Level};
 
 use crate::network::State;
-use network::{daemon, Channel, NetworkNode};
+use network::{daemon, Channel, LogEntry, NetworkNode};
 use protocol::Command;
 
 pub mod network;
@@ -73,10 +73,18 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                             last_leader_heartbeat_send = Instant::now();
                             node.send_heartbeat();
                         }
+
+                        // check all next_index and match_index and send append_entries
+                        // requests to followers if needed
+                        node.send_append_entries_request_to_all_followers();
+
+                        // check if a majority of match_index is greater than commit_index
+                        node.advance_commit_index_if_possible();
                     }
                 }
 
-                // If commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine (§5.3)
+                // If commitIndex > lastApplied: increment lastApplied,
+                // apply log[lastApplied] to state machine
                 node.apply_commited_entry_to_log_if_possible();
 
                 // replay any buffered commands after the retry interval
@@ -100,6 +108,14 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                 }
 
                 while let Ok(cmd) = node.decode(Some(Instant::now() + cq_timeout)) {
+                    // prepare a log entry for customer commands,
+                    // won't be used for control commands, but saves some code duplication
+                    let log_entry = LogEntry {
+                        term: node.current_term,
+                        index: node.get_prev_log_index() + 1,
+                        command: cmd.clone(),
+                    };
+
                     match cmd.clone() {
                         // customer requests
                         Command::Open { account } => {
@@ -113,6 +129,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 continue;
                             }
                             debug!("request to open an account for {:?}", account);
+                            node.append_entry_to_log(log_entry);
                         }
 
                         Command::Deposit { account, amount } => {
@@ -126,6 +143,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 continue;
                             }
                             debug!(amount, ?account, "request to deposit");
+                            node.append_entry_to_log(log_entry);
                         }
 
                         Command::Withdraw { account, amount } => {
@@ -139,6 +157,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 continue;
                             }
                             debug!(amount, ?account, "request to withdraw");
+                            node.append_entry_to_log(log_entry);
                         }
 
                         Command::Transfer { src, dst, amount } => {
@@ -152,6 +171,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 continue;
                             }
                             debug!(amount, ?src, ?dst, "request to transfer");
+                            node.append_entry_to_log(log_entry);
                         }
 
                         // Control commands
@@ -230,27 +250,6 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                             entries,
                             leader_commit,
                         } => {
-                            if entries.is_empty() {
-                                trace!(
-                                    term,
-                                    leader_id,
-                                    // prev_log_index,
-                                    // prev_log_term,
-                                    // leader_commit,
-                                    "received heartbeat"
-                                );
-                            } else {
-                                trace!(
-                                    term,
-                                    leader_id,
-                                    prev_log_index,
-                                    prev_log_term,
-                                    leader_commit,
-                                    "received append entries"
-                                );
-                            }
-
-                            // TODO: make this a function
                             node.last_heartbeat = Instant::now();
                             node.current_leader = Some(leader_id);
 
@@ -278,12 +277,19 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 continue;
                             }
 
+                            node.set_commit_index(leader_commit);
+
                             if entries.is_empty() {
                                 // heartbeat, nothing to append
-                                continue;
+                                trace!("received heartbeat");
+                            } else {
+                                trace!(
+                                    ?entries,
+                                    prev_log_index,
+                                    prev_log_term,
+                                    "received append entries"
+                                )
                             }
-
-                            let last_new_entry = entries.last().unwrap();
 
                             // Reply false if log doesn’t contain an entry at prevLogIndex
                             // whose term matches prevLogTerm
@@ -292,10 +298,11 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                     // an initial append should work, even though the
                                     // log is empty which means we can't fetch the
                                     // previous log entry
-                                    if prev_log_index == 0 && node.get_prev_log_index() == 0 {
-                                        //append!
-                                        node.append_entries_to_log(entries.clone());
-                                        node.set_commit_index(leader_commit, last_new_entry.index);
+                                    if prev_log_index == 0 && prev_log_term == 0 {
+                                        if !entries.is_empty() {
+                                            //append!
+                                            node.append_entries_to_log(entries.clone());
+                                        }
                                         node.send_append_entries_response(node.current_term, true);
                                     } else {
                                         trace!(
@@ -308,32 +315,53 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                     }
                                 }
                                 Some(entry) => {
-                                    if entry.term != prev_log_term {
+                                    if entry.term != prev_log_term || entry.index != prev_log_index
+                                    {
                                         trace!(
                                             prev_log_index,
                                             prev_log_term,
                                             entry.term,
-                                            "reject append entries, term of prevoious entry does not match"
+                                            "reject append entries, term or index of prevoious entry does not match"
                                         );
                                         node.send_append_entries_response(node.current_term, false);
-                                        continue;
                                     } else {
-                                        // append!
-                                        node.append_entries_to_log(entries.clone());
-                                        node.set_commit_index(leader_commit, last_new_entry.index);
+                                        if !entries.is_empty() {
+                                            // append!
+                                            node.append_entries_to_log(entries.clone());
+                                        }
                                         node.send_append_entries_response(node.current_term, true);
                                     }
                                 }
                             }
                         }
 
-                        Command::AppendEntriesResponse { term, success } => {
+                        Command::AppendEntriesResponse {
+                            term,
+                            success,
+                            sender_id,
+                            sender_last_match_index,
+                        } => {
                             trace!(term, success, "received append entries response");
 
                             // check if the term on the responder is greater than our own,
                             // and if so convert from candidate to follower
                             if node.check_term_and_convert_to_follower_if_needed(term) {
                                 continue;
+                            } else if node.is_leader() {
+                                if success {
+                                    let match_index = node.match_index.get_mut(&sender_id).unwrap();
+                                    let next_index = node.next_index.get_mut(&sender_id).unwrap();
+
+                                    *match_index = sender_last_match_index;
+                                    *next_index = sender_last_match_index + 1;
+
+                                    // node.increment_next_index(sender_id);
+                                    // node.increment_match_index(sender_id);
+                                } else {
+                                    // find out who sent the response and decrement their next_index
+                                    node.decrement_next_index(sender_id);
+                                    node.send_append_entries_request(address)
+                                }
                             }
                         }
                     }
@@ -363,7 +391,7 @@ fn main() -> io::Result<()> {
     // initialize the tracer
     FmtSubscriber::builder()
         .with_timer(ChronoLocal::new("[%Mm %Ss]".to_string()))
-        .with_max_level(Level::TRACE)
+        .with_max_level(Level::DEBUG)
         .init();
 
     // create and connect a number of offices
@@ -371,6 +399,7 @@ fn main() -> io::Result<()> {
     let copy = channels.clone();
 
     // activate the thread responsible for the disruption of connections
+
     thread::spawn(move || daemon(copy, 1.0, 1.0));
 
     // sample script for your convenience
