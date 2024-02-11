@@ -14,6 +14,7 @@ use std::{
 };
 use tracing::{debug, info, trace, trace_span};
 
+use crate::bank::Bank;
 use crate::protocol::Command;
 
 /// Constant that causes an artificial delay in the relaying of messages.
@@ -99,6 +100,9 @@ pub struct NetworkNode<T> {
 
     /// current leader
     pub current_leader: Option<usize>,
+
+    /// bank
+    bank: Bank,
 }
 
 /// Reliable channel to a network node.
@@ -159,6 +163,7 @@ impl<T> NetworkNode<T> {
             match_index: HashMap::new(),
             votes: 0,
             current_leader: None,
+            bank: Bank::new(),
         };
         Ok(node)
     }
@@ -229,15 +234,42 @@ impl<T> NetworkNode<T> {
         return false;
     }
 
+    pub fn apply_command_to_state_machine(&mut self, command: Command) -> bool {
+        match self.bank.apply_command(&command) {
+            Ok(_) => {
+                return true;
+            }
+            Err(_) => {
+                return false;
+            }
+        }
+    }
+
     pub fn apply_commited_entry_to_log_if_possible(&mut self) {
         while self.commit_index > self.last_applied {
             // apply log entries
 
-            let entry = self.get_log_entry_at_index(self.last_applied + 1).unwrap();
-            self.append(&entry);
+            // let entry = self.get_log_entry_at_index(self.last_applied + 1).unwrap();
+            let entry = self.working_memory_log.get(self.last_applied).unwrap();
 
             if self.is_leader() {
-                info!(self.address, "applying log entry to state machine");
+                info!("applying log entry to state machine {:?}", entry);
+            }
+
+            match self.bank.apply_command(&entry.command) {
+                Ok(_) => {
+                    self.append(&entry, true);
+                }
+                Err(err) => {
+                    if self.is_leader() {
+                        info!(
+                            "failed to apply log entry to state machine {:?} {:?}",
+                            entry, err
+                        );
+                    }
+                    debug!("failed to apply log entry to state machine {:?}", entry);
+                    self.append(&entry, false);
+                }
             }
 
             self.last_applied += 1;
@@ -480,17 +512,15 @@ impl<T> NetworkNode<T> {
                 let connection = self.connections.get(&leader_id).unwrap();
                 match connection.encode(command.clone()) {
                     Ok(_) => {
-                        debug!("successfully forwarded command {:?} to leader", command);
+                        trace!("successfully forwarded command {:?} to leader", command);
                         return true;
                     }
                     Err(_) => {
-                        // let _ = self.connections.get(&self.address).unwrap().encode(command);
                         return false;
                     }
                 }
             }
             None => {
-                // let _ = self.connections.get(&self.address).unwrap().encode(command);
                 return false;
             }
         }
@@ -562,11 +592,11 @@ impl<T> NetworkNode<T> {
 
     /// Appends a message to the logfile.
     /// This can not be undone. Make sure it's consistent with the other nodes.
-    pub fn append<E: fmt::Debug>(&self, entry: &E) {
+    pub fn append<E: fmt::Debug>(&self, entry: &E, success: bool) {
         let next_log_index = self.last_log_index.get() + 1;
 
         (&self.log_file)
-            .write(format!("{:4} {:?}\n", next_log_index, entry).as_bytes())
+            .write(format!("{:4} {} {:?}\n", next_log_index, success, entry).as_bytes())
             .ok();
 
         self.last_log_index.set(next_log_index);
@@ -699,7 +729,7 @@ pub fn daemon<T>(mut channels: Vec<Channel<T>>, events_per_sec: f32, duration_in
                     let partition = rng.sample(partition);
                     channel.part.store(partition, Ordering::SeqCst);
 
-                    trace!(node = channel.address, "disrupt");
+                    debug!(node = channel.address, "disrupt");
 
                     // add the restoration-event to the scheduler
                     sched.push(Event {
@@ -717,7 +747,7 @@ pub fn daemon<T>(mut channels: Vec<Channel<T>>, events_per_sec: f32, duration_in
             EventType::Restore(channel) => {
                 // restore the previously disrupted network node
                 channel.part.store(0, Ordering::SeqCst);
-                trace!(node = channel.address, "restore");
+                debug!(node = channel.address, "restore");
                 channels.push(channel);
             }
         }

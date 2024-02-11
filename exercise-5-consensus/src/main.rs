@@ -12,6 +12,7 @@ use crate::network::State;
 use network::{daemon, Channel, LogEntry, NetworkNode};
 use protocol::Command;
 
+pub mod bank;
 pub mod network;
 pub mod protocol;
 

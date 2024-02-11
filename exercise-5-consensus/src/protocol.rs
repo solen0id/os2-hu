@@ -43,6 +43,12 @@ pub enum Command {
     AppendEntriesResponse {
         term: usize,
         success: bool,
+
+        // The following fields are needed, because unlike the original Raft
+        // we don't use RPCs, so we need to know who sent response to update
+        // the next_index and match_index. If we try to infer those values
+        // they may be incorrect, because other events could have happened
+        // in between sending the request and receiving the response.
         sender_id: usize,
         sender_last_match_index: usize,
     },
