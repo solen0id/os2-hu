@@ -37,21 +37,29 @@ pub struct NetworkNode<T> {
 
     /// State of Node: Follower/Candidate/Leader
     pub state: State,
+
     /// Current term of node
     pub current_term: usize,
+
     /// Checks if the node voted in this current_term
     pub vote_granted: bool,
+
     /// Connections to all other nodes
     pub connections: Vec<Option<Connection<Command>>>,
+
     /// Non-committed log entries
     pub log: Vec<LogEntry>,
+
     /// Index of log-entries that is committed
     pub commit_index: usize,
+
     /// number of requests the node received
     pub request_counter: usize,
+
     /// Received request that needs to be send to the leader
     pub request_buffer: Vec<LogEntry>,
 
+    /// Local bank "database", checks if operations on accounts are valid
     pub local_bank_db: HashMap<String, usize>,
 }
 
@@ -95,7 +103,8 @@ impl<T> NetworkNode<T> {
             state: State::Follower,
             current_term: 0,
             vote_granted: false,
-            connections: Vec::new(), //vec![None; offices],
+            connections: Vec::new(),
+
             // Create first entry to avoid index errors when comparing to last entry
             log: vec![
                 LogEntry {
@@ -109,10 +118,10 @@ impl<T> NetworkNode<T> {
                 };
                 1
             ],
-            // Default entry is committed
-            commit_index: 0,
-            request_buffer: Vec::new(),
+
+            commit_index: 0, // Default entry is committed
             request_counter: 0,
+            request_buffer: Vec::new(),
             local_bank_db: HashMap::new(),
         })
     }

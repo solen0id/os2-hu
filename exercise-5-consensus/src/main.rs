@@ -39,6 +39,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
             for _i in 0..office_count {
                 node.connections.push(None);
             }
+
             node.connections[address] = Some(node.accept(node.channel()));
             node.send(Command::CheckForTimeout {}, address);
 
@@ -74,8 +75,8 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                         };
                         node.request_counter += 1;
                         node.request_buffer.push(msg.clone());
-                        //node.send(Command::ForwardedCommand{forwarded: msg, origin_id: address}, leader);
                     }
+
                     Command::Deposit { account, amount } => {
                         debug!(amount, ?account, "request to deposit");
                         let msg = LogEntry {
@@ -89,8 +90,8 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                         };
                         node.request_counter += 1;
                         node.request_buffer.push(msg.clone());
-                        //node.send(Command::ForwardedCommand{forwarded: msg, origin_id: address}, leader);
                     }
+
                     Command::Withdraw { account, amount } => {
                         debug!(amount, ?account, "request to withdraw");
                         let msg = LogEntry {
@@ -104,8 +105,8 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                         };
                         node.request_counter += 1;
                         node.request_buffer.push(msg.clone());
-                        //node.send(Command::ForwardedCommand{forwarded: msg, origin_id: address}, leader);
                     }
+
                     Command::Transfer { src, dst, amount } => {
                         debug!(amount, ?src, ?dst, "request to transfer");
                         let msg = LogEntry {
@@ -119,7 +120,6 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                         };
                         node.request_counter += 1;
                         node.request_buffer.push(msg.clone());
-                        //node.send(Command::ForwardedCommand{forwarded: msg, origin_id: address}, leader);
                     }
 
                     // control messages
@@ -152,6 +152,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                             }
                         }
                     }
+
                     // Check if during the dynamic waiting time a candidate was elected
                     Command::Timeout {} => {
                         // Check if another leader has already been found
@@ -176,11 +177,13 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                             "joined the election as candidate for term {}",
                             node.current_term + 1
                         );
+
                         // Reset votes (voted for himself)
                         votes = 1;
                         node.state = State::Candidate;
                         node.current_term += 1;
                         last_leader_contact = Instant::now();
+
                         // Inform all threads
                         for address in 0..office_count {
                             if address != node.address {
@@ -260,6 +263,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                             );
                         }
                     }
+
                     // Receiving a positive vote
                     Command::VoteYes { voter_id } => {
                         trace!(origin = voter_id, "Received pos Vote");
@@ -287,7 +291,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                         }
                     }
 
-                    // Sending heartbeats every 250ms
+                    // Sending heartbeats every 120 ms
                     Command::SendingHeartbeat {} => {
                         if node.state == State::Leader {
                             if last_leader_contact.elapsed()
@@ -322,7 +326,8 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                             }
                         }
                     }
-                    //
+
+                    // AppendEntry from leader or Heartbeat
                     Command::AppendEntry {
                         leader_term,
                         leader_id,
@@ -369,6 +374,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 "Accept new leader (term {})",
                                 leader_term
                             );
+
                             node.current_term = leader_term;
                             node.vote_granted = false;
                             last_leader_contact = Instant::now();
@@ -396,11 +402,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 );
                             } else {
                                 trace!("Received payload; Log consistent");
-                                //let str = commit(current_entry.clone(), &mut node.local_bank_db);
-                                //node.append(&str);
-                                //if (current_entry.origin_id == node.request_buffer.first().unwrap().origin_id) & (current_entry.origin_nr == node.request_buffer.first().unwrap().origin_nr) {
-                                //	node.request_buffer.remove(0);
-                                //}
+
                                 node.log.push(current_entry.clone());
                                 if node.request_buffer.len() > 0 {
                                     if compare_log_entries(
@@ -421,6 +423,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                     leader_id,
                                 );
                             }
+
                             // commit if log was consistent
                             while (leader_commit > node.commit_index)
                                 & (node.commit_index < node.log.len() - 1)
@@ -475,6 +478,8 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                             );
                         }
                     }
+
+                    // AppendEntryResponse from follower
                     Command::AppendEntryResponse {
                         success,
                         term,
@@ -500,9 +505,8 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                     responder_id,
                                     responder_index
                                 );
-
-                                //followerIndex. get(&responder_id). =responder_index;
                             }
+
                             // Send additional log entries to each follower who is missing entries
                             if responder_index < node.log.len() - 1 {
                                 node.send(
@@ -523,6 +527,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                         }
                     }
 
+                    // Forwarded commands to leader
                     Command::ForwardedCommand {
                         mut forwarded,
                         origin_id,
@@ -533,12 +538,15 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                             follower_logs[origin_id],
                             node.log.len()
                         );
+
                         if (node.state == State::Leader)
                             & (follower_logs[origin_id] == node.log.len() - 1)
                         {
                             trace!("sends received command to all followers");
+
                             forwarded.term = node.current_term;
                             last_leader_contact = Instant::now();
+
                             for address in 0..office_count {
                                 if address != node.address {
                                     node.send(
@@ -553,6 +561,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                     );
                                 }
                             }
+
                             if (node.request_buffer.len() > 0) & !request_in_log {
                                 trace!("Compare to data");
                                 if compare_log_entries(
@@ -566,7 +575,6 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                             }
                             let str = commit(forwarded.clone(), &mut node.local_bank_db);
                             node.append(&str);
-                            //node.append(&commit(forwarded.clone(), &mut node.local_bank_db));
                             node.log.push(forwarded);
                             follower_index
                                 .get(&node.address)
@@ -574,6 +582,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                         }
                     }
 
+                    // NOOP
                     Command::HeartBeat {} => {}
                 }
             }

@@ -49,7 +49,6 @@ pub enum Command {
     /// Periodically sending heartbeats
     SendingHeartbeat {},
 
-    /// Heartbeat -> TODO add payload
     AppendEntry {
         leader_term: usize,
         leader_id: usize,
@@ -57,6 +56,7 @@ pub enum Command {
         last_entry: LogEntry,
         current_entry: LogEntry,
     },
+
     AppendEntryResponse {
         success: bool,
         term: usize,
@@ -64,14 +64,11 @@ pub enum Command {
         responder_index: usize,
     },
 
-    /// Forward Command
     ForwardedCommand {
         forwarded: LogEntry,
         origin_id: usize,
     },
 
-    //ResultForwarding { success: bool },
-    //ReceiveCommand { forwarded: LogEntry },
     /// Empty Command for Heartbeat
     HeartBeat {},
 }
@@ -98,10 +95,8 @@ pub struct LogEntry {
     pub acc1: String,
     pub acc2: String,
     pub amount: usize,
-    // term in which it was appended to the log
-    pub term: usize,
-    // Identification for the entry
-    pub origin_id: usize,
+    pub term: usize,      // term in which it was appended to the log
+    pub origin_id: usize, // Identification for the entry
     pub origin_nr: usize,
 }
 
@@ -129,6 +124,7 @@ pub fn commit(entry: LogEntry, bank_db: &mut HashMap<String, usize>) -> String {
                 );
             }
         }
+
         Transaction::Deposit => {
             if !bank_db.contains_key(&entry.acc1) {
                 return format!(
@@ -152,6 +148,7 @@ pub fn commit(entry: LogEntry, bank_db: &mut HashMap<String, usize>) -> String {
                 );
             }
         }
+
         Transaction::Transfer => {
             if !bank_db.contains_key(&entry.acc1) {
                 return format!(
@@ -192,6 +189,7 @@ pub fn commit(entry: LogEntry, bank_db: &mut HashMap<String, usize>) -> String {
                 );
             }
         }
+
         Transaction::Withdraw => {
             if !bank_db.contains_key(&entry.acc1) {
                 return format!(
