@@ -1,6 +1,0 @@
-   1 LogEntry { term: 1, index: 1, command: Open { account: "Redlich" } }
-   2 LogEntry { term: 1, index: 2, command: Open { account: "Weber" } }
-   3 LogEntry { term: 1, index: 3, command: Deposit { account: "Redlich", amount: 100 } }
-   4 LogEntry { term: 1, index: 4, command: Deposit { account: "Weber", amount: 50 } }
-   5 LogEntry { term: 1, index: 5, command: Transfer { src: "Redlich", dst: "Weber", amount: 20 } }
-   6 LogEntry { term: 1, index: 6, command: Withdraw { account: "Weber", amount: 60 } }
