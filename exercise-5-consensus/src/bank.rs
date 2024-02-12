@@ -15,10 +15,7 @@ impl Bank {
 
     pub fn apply_command(&mut self, cmd: &Command) -> Result<String, Box<dyn Error>> {
         match cmd {
-            Command::Open { account } => {
-                self.open_account(account.to_string());
-                Ok("Account opened".into())
-            }
+            Command::Open { account } => self.open_account(account.to_string()),
 
             Command::Deposit { account, amount } => {
                 let balance = self.deposit(account.to_string(), *amount)?;
@@ -47,8 +44,13 @@ impl Bank {
         }
     }
 
-    pub fn open_account(&mut self, account: String) {
+    pub fn open_account(&mut self, account: String) -> Result<String, Box<dyn Error>> {
+        if self.accounts.contains_key(&account) {
+            return Err("Account exists already".into());
+        }
+
         self.accounts.insert(account, 0);
+        return Ok("Opened account".into());
     }
 
     pub fn deposit(&mut self, account: String, amount: usize) -> Result<usize, Box<dyn Error>> {
@@ -67,6 +69,10 @@ impl Bank {
             return Err("Can not withdraw, Account not found".into());
         }
 
+        if *self.accounts.get(&account).unwrap() < amount {
+            return Err("Can not withdraw, Insufficient funds".into());
+        }
+
         let balance = self.accounts.entry(account).or_insert(0);
         *balance -= amount;
 
@@ -83,14 +89,12 @@ impl Bank {
             return Err("Can not transfer, Account not found".into());
         }
 
-        {
-            let src_balance = self.accounts.entry(src.clone()).or_insert(0);
-            *src_balance -= amount;
+        if self.withdraw(src.clone(), amount).is_err() {
+            return Err("Can not transfer, Withdraw failed".into());
         }
 
-        {
-            let dst_balance = self.accounts.entry(dst.clone()).or_insert(0);
-            *dst_balance += amount;
+        if self.deposit(dst.clone(), amount).is_err() {
+            return Err("Can not transfer, Deposit failed".into());
         }
 
         Ok((

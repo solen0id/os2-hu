@@ -410,8 +410,8 @@ impl<T> NetworkNode<T> {
                     }
                 }
                 None => {
-                    // this should probably not happen!
-                    debug!("no log entry at index {}", hightest_count_index);
+                    // this should probably not happen very often?
+                    trace!("no log entry at index {}", hightest_count_index);
                 }
             }
         }
