@@ -5,7 +5,7 @@ use std::{env::args, fs, io, thread};
 
 use rand::prelude::*;
 
-use tracing::{debug, info, trace, trace_span, Level, warn};
+use tracing::{debug, info, trace, trace_span, warn, Level};
 
 use crate::protocol::{commit, compare_log_entries, Transaction};
 use network::{daemon, Channel, NetworkNode};
@@ -293,12 +293,12 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                             {
                                 trace!("sends heartbeat to all followers");
                                 for address in 0..office_count {
-                                    if address != node.address{
+                                    if address != node.address {
                                         node.send(
                                             Command::AppendEntry {
                                                 leader_term: node.current_term,
                                                 leader_commit: node.commit_index,
-                                                last_index: node.log.len()-1,
+                                                last_index: node.log.len() - 1,
                                                 leader_id: node.address,
                                                 last_entry: node.log.last().unwrap().clone(),
                                                 current_entry: LogEntry {
@@ -332,7 +332,6 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 // Check later again
                                 node.send(Command::SendingHeartbeat {}, node.address);
                             }
-
                         }
                     }
 
@@ -375,7 +374,9 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                     "Accept current leader (term {})",
                                     leader_term
                                 );
-                            } else if node.state == State::Leader { continue; }
+                            } else if node.state == State::Leader {
+                                continue;
+                            }
                         }
                         // sender is the leader of a new term
                         else if node.current_term < leader_term {
@@ -414,8 +415,8 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 trace!("Received payload; Log consistent");
 
                                 node.log.push(current_entry.clone());
-                                node.follower_last_log_index[node.address] = node.log.len()-1;
-                                trace!("Log appended; new last log index {}", node.log.len()-1);
+                                node.follower_last_log_index[node.address] = node.log.len() - 1;
+                                trace!("Log appended; new last log index {}", node.log.len() - 1);
 
                                 // Check if the new entry was a request from this node
                                 if node.request_buffer.len() > 0 {
@@ -457,16 +458,22 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                     }
                                 }
                                 trace!("committed log entry {}", node.commit_index);
-                                let str = commit(
+                                let commit_message = commit(
                                     node.log[node.commit_index].clone(),
                                     &mut node.local_bank_db,
                                 );
-                                node.append(&str);
+                                node.append(&commit_message);
+
+                                if node.state == State::Leader && commit_message.starts_with("Ok") {
+                                    info!(commit_message, "committed log entry");
+                                }
                             }
                             // Check if the node needs to forward request to the leader
                             if !node.request_buffer.is_empty() & !node.request_in_log {
-                                trace!("input buffer non-empty; forward request {}",
-                                    node.request_buffer.first().unwrap().origin_id);
+                                trace!(
+                                    "input buffer non-empty; forward request {}",
+                                    node.request_buffer.first().unwrap().origin_id
+                                );
                                 node.send(
                                     Command::ForwardedCommand {
                                         forwarded: node.request_buffer.first().unwrap().clone(),
@@ -477,9 +484,11 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                             }
                         } else {
                             // If log was inconsistent and too long -> delete last element
-                            if (node.commit_index < node.log.len() - 1) & (last_index<=node.log.len()-1) {
+                            if (node.commit_index < node.log.len() - 1)
+                                & (last_index <= node.log.len() - 1)
+                            {
                                 trace!("Log was inconsistent; Remove entry {}", node.log.len() - 1);
-                                if !node.request_buffer.is_empty(){
+                                if !node.request_buffer.is_empty() {
                                     if compare_log_entries(
                                         &node.log[node.log.len() - 1],
                                         node.request_buffer.first().unwrap(),
@@ -497,7 +506,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                     success: false,
                                     term: node.current_term,
                                     responder_id: node.address,
-                                    responder_index: node.log.len()-1,
+                                    responder_index: node.log.len() - 1,
                                 },
                                 leader_id,
                             );
@@ -524,7 +533,8 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                 let mut copy_of_log_indices = node.follower_last_log_index.clone();
                                 copy_of_log_indices.sort();
                                 //  calculate the index that at least 50%+1 nodes have in the log
-                                let majority_index = copy_of_log_indices[((office_count + 1) / 2) -1];
+                                let majority_index =
+                                    copy_of_log_indices[((office_count + 1) / 2) - 1];
 
                                 if node.commit_index < majority_index {
                                     // Commit the additional entries
@@ -532,12 +542,14 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                         & (node.commit_index < node.log.len() - 1)
                                     {
                                         node.commit_index += 1;
-                                        if !node.request_buffer.is_empty() &  node.request_in_log {
+                                        if !node.request_buffer.is_empty() & node.request_in_log {
                                             trace!("Compare to data");
-                                            if node.request_in_log & compare_log_entries(
-                                                &node.log[node.commit_index],
-                                                node.request_buffer.first().unwrap(),
-                                            ) {
+                                            if node.request_in_log
+                                                & compare_log_entries(
+                                                    &node.log[node.commit_index],
+                                                    node.request_buffer.first().unwrap(),
+                                                )
+                                            {
                                                 trace!("Remove saved entry");
                                                 node.request_in_log = false;
                                                 node.request_buffer.remove(0);
@@ -546,13 +558,22 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                             }
                                         }
                                         trace!("committed log entry {}", node.commit_index);
-                                        let str = commit(
+                                        let commit_message = commit(
                                             node.log[node.commit_index].clone(),
                                             &mut node.local_bank_db,
                                         );
-                                        node.append(&str);
+                                        node.append(&commit_message);
+
+                                        if node.state == State::Leader
+                                            && commit_message.starts_with("Ok")
+                                        {
+                                            info!(commit_message, "committed log entry");
+                                        }
                                     }
-                                    info!("leader increases commit index to {}", node.commit_index);
+                                    trace!(
+                                        "leader increases commit index to {}",
+                                        node.commit_index
+                                    );
                                 }
                                 trace!(
                                     "leader gets the info that node {} has {} as last log index",
@@ -587,12 +608,19 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                         mut forwarded,
                         origin_id,
                     } => {
-                        trace!( "asked to accept request {} from node {}", forwarded.origin_nr ,origin_id );
+                        trace!(
+                            "asked to accept request {} from node {}",
+                            forwarded.origin_nr,
+                            origin_id
+                        );
 
                         if (node.state == State::Leader)
                             & (node.follower_last_log_index[origin_id] == node.log.len() - 1)
                         {
-                            trace!("request from node {} accepted -> send request to all followers", origin_id);
+                            trace!(
+                                "request from node {} accepted -> send request to all followers",
+                                origin_id
+                            );
                             forwarded.term = node.current_term;
                             last_leader_contact = Instant::now();
 
@@ -603,7 +631,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                             leader_term: node.current_term,
                                             leader_commit: node.commit_index,
                                             leader_id: node.address,
-                                            last_index: node.log.len()-1,
+                                            last_index: node.log.len() - 1,
                                             last_entry: node.log.last().unwrap().clone(),
                                             current_entry: forwarded.clone(),
                                         },
@@ -621,14 +649,14 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                     node.request_in_log = true;
                                 }
                             }
-                            //let str = commit(forwarded.clone(), &mut node.local_bank_db);
-                            //node.append(&str);
+
                             node.log.push(forwarded);
-                            node.follower_last_log_index[node.address] = node.log.len()-1;
-
-
+                            node.follower_last_log_index[node.address] = node.log.len() - 1;
                         } else {
-                            trace!("Log from node {} not consistent -> request ignored", origin_id);
+                            trace!(
+                                "Log from node {} not consistent -> request ignored",
+                                origin_id
+                            );
                         }
                     }
 

@@ -252,7 +252,7 @@ pub fn daemon<T>(mut channels: Vec<Channel<T>>, events_per_sec: f32, duration_in
     use rand::prelude::*;
     use rand_distr::{Exp, Uniform};
     use std::{collections::BinaryHeap, thread};
-    use tracing::{trace, trace_span};
+    use tracing::{debug, trace_span};
 
     struct Event<T> {
         time: Instant,
@@ -340,7 +340,7 @@ pub fn daemon<T>(mut channels: Vec<Channel<T>>, events_per_sec: f32, duration_in
                     let partition = rng.sample(partition);
                     channel.part.store(partition, Ordering::SeqCst);
 
-                    trace!(node = channel.address, "disrupt");
+                    debug!(node = channel.address, "disrupt");
 
                     // add the restoration-event to the scheduler
                     sched.push(Event {
@@ -358,7 +358,7 @@ pub fn daemon<T>(mut channels: Vec<Channel<T>>, events_per_sec: f32, duration_in
             EventType::Restore(channel) => {
                 // restore the previously disrupted network node
                 channel.part.store(0, Ordering::SeqCst);
-                trace!(node = channel.address, "restore");
+                debug!(node = channel.address, "restore");
                 channels.push(channel);
             }
         }
