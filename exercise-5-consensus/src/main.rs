@@ -132,7 +132,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                     trace!("election timed out; return to follower status");
                                     node.state = State::Follower;
                                 }
-                                // wait random amount before starting a new elecetion
+                                // wait random amount before starting a new election
                                 last_timeout = Instant::now();
                                 dynamic_waiting_time =
                                     rand::thread_rng().gen_range(1..TIMEOUT_DELAY);
@@ -552,7 +552,7 @@ pub fn setup_offices(office_count: usize, log_path: &str) -> io::Result<Vec<Chan
                                         );
                                         node.append(&str);
                                     }
-                                    info!("leader incresases commit index to {}", node.commit_index);
+                                    info!("leader increases commit index to {}", node.commit_index);
                                 }
                                 trace!(
                                     "leader gets the info that node {} has {} as last log index",
@@ -660,7 +660,7 @@ fn main() -> io::Result<()> {
     // initialize the tracer
     FmtSubscriber::builder()
         .with_timer(ChronoLocal::new("[%Mm %Ss]".to_string()))
-        .with_max_level(Level::DEBUG)//DEBUG for overview; TRACE for details
+        .with_max_level(Level::DEBUG) //DEBUG for overview; TRACE for details
         .init();
 
     // create and connect a number of offices
@@ -683,6 +683,10 @@ fn main() -> io::Result<()> {
         [2] "Redlich" => transfer("Weber", 20);
         sleep();
         [3] "Weber"   => withdraw(60);
+        sleep();
+        [3] "Weber"   => withdraw(70);          // should fail
+        sleep();
+        [3] "Weber"   => deposit(30);           // should be okay -> failed transactions shouldn't stop the execution
         sleep(2);
     }
 
