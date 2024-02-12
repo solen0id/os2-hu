@@ -49,14 +49,16 @@ pub enum Command {
     /// Periodically sending heartbeats
     SendingHeartbeat {},
 
+    /// Appends a new entry if last entry was coorect
     AppendEntry {
         leader_term: usize,
         leader_id: usize,
         leader_commit: usize,
         last_entry: LogEntry,
+        last_index: usize,
         current_entry: LogEntry,
     },
-
+    /// Message the result back to the leader
     AppendEntryResponse {
         success: bool,
         term: usize,
@@ -64,6 +66,7 @@ pub enum Command {
         responder_index: usize,
     },
 
+    /// Contacts the leader to forward a request to all nodes
     ForwardedCommand {
         forwarded: LogEntry,
         origin_id: usize,
@@ -88,6 +91,7 @@ pub enum Transaction {
     Transfer,
     Withdraw,
 }
+/// Log entries for all requests
 #[derive(Debug, Clone)]
 pub struct LogEntry {
     // Entry
@@ -99,13 +103,15 @@ pub struct LogEntry {
     pub origin_id: usize, // Identification for the entry
     pub origin_nr: usize,
 }
-
+/// Compares two log entries
 pub fn compare_log_entries(entry_1: &LogEntry, entry_2: &LogEntry) -> bool {
     if (entry_1.origin_id == entry_2.origin_id) & (entry_1.origin_nr == entry_2.origin_nr) {
         return true;
     }
     return false;
 }
+
+/// Creates a more detailed commit message that can be appended
 pub fn commit(entry: LogEntry, bank_db: &mut HashMap<String, usize>) -> String {
     match entry.command_type {
         Transaction::Open => {

@@ -61,6 +61,17 @@ pub struct NetworkNode<T> {
 
     /// Local bank "database", checks if operations on accounts are valid
     pub local_bank_db: HashMap<String, usize>,
+
+    /// Length of the logs from all other nodes
+    pub follower_last_log_index: Vec<usize>,
+
+    /// Number of positive votes in current term
+    pub votes: usize,
+
+    /// Status of last request
+    /// True: Current request is in log and it is not need to send it again
+    /// False: Resend last request
+    pub request_in_log: bool,
 }
 
 /// Reliable channel to a network node.
@@ -120,9 +131,12 @@ impl<T> NetworkNode<T> {
             ],
 
             commit_index: 0, // Default entry is committed
-            request_counter: 0,
+            request_counter: 1,
             request_buffer: Vec::new(),
             local_bank_db: HashMap::new(),
+            follower_last_log_index: Vec::new(),
+            request_in_log: false,
+            votes: 0,
         })
     }
 
