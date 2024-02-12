@@ -100,8 +100,8 @@ pub struct LogEntry {
     pub acc2: String,
     pub amount: usize,
     pub term: usize,      // term in which it was appended to the log
-    pub origin_id: usize, // Identification for the entry
-    pub origin_nr: usize,
+    pub origin_id: usize, // Identification for the entry (node dependent)
+    pub origin_nr: usize, // node that got the request
 }
 /// Compares two log entries
 pub fn compare_log_entries(entry_1: &LogEntry, entry_2: &LogEntry) -> bool {
